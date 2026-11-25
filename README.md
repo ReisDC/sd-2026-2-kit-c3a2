@@ -116,3 +116,32 @@ Se quiser usar outra linguagem, converse com o professor antes.
 **Posso usar IA para me ajudar a programar?** Sim. Este é um trabalho prático feito fora de
 sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funcionando** e as
 **decisões de arquitetura** — que você precisa saber explicar.
+
+---
+
+## Conformidade com a LGPD
+
+A plataforma recebe um texto, classifica o sentimento e devolve o resultado. Abaixo estão
+os dados tratados, a finalidade de cada um e por quanto tempo ficam guardados.
+
+| Dado | Onde aparece | Finalidade | Retenção |
+|---|---|---|---|
+| Usuário e senha | `POST /login` | Autenticar o cliente antes de emitir o token | Não são armazenados; a senha só é comparada com a configurada em variável de ambiente |
+| Token JWT (`sub`, `iat`, `exp`) | Cabeçalho `Authorization` | Autorizar as chamadas às rotas protegidas | Não é guardado no servidor; expira em `JWT_EXPIRACAO_MINUTOS` (60 min por padrão) |
+| Identificador do cliente (usuário do token ou IP) | Rate limit do gateway | Limitar requisições por minuto e proteger o serviço contra abuso | Só em memória, com horários dos últimos 60 s; perdido ao reiniciar o gateway |
+| Texto enviado | `POST /predict`, fila e worker | Executar a inferência de sentimento solicitada pelo cliente | Fica no Redis com o resultado até o container ser recriado; não há volume persistente |
+| Resultado (sentimento e confiança) | Redis e `GET /resultado/{id}` | Devolver a resposta ao cliente | Mesmo prazo do texto |
+| Logs | Saída dos containers | Diagnóstico e observabilidade | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada; nunca o texto, a senha ou o token |
+
+**Base legal:** execução do serviço solicitado pelo próprio titular (art. 7º, V). Nenhum dado é
+usado para treinar o modelo, compartilhado com terceiros ou usado para outra finalidade.
+
+**Minimização:** o serviço não pede nome, CPF, e-mail nem qualquer outro dado pessoal. O texto
+é o único conteúdo livre; recomenda-se não enviar dados pessoais nele.
+
+**Segurança (art. 46):** rotas protegidas por JWT, segredo e credenciais fora do código
+(variáveis de ambiente), limite de requisições por cliente, HTTPS no serviço publicado e
+comunicação interna apenas na rede privada do Docker.
+
+**Direitos do titular (art. 18):** como não há cadastro, o titular pode pedir a exclusão de uma
+tarefa informando o id recebido; o responsável apaga a chave `resultado:<id>` do Redis.
