@@ -4,6 +4,7 @@ API Gateway - porta de entrada unica da plataforma.
 JA PRONTO: roteamento para o servico de inferencia e log de requisicoes.
 TAREFA 1: autenticacao por JWT.
 TAREFA 2: limite de requisicoes por cliente (rate limit).
+TAREFA 6: resiliencia (tempo-limite, retentativa com espera progressiva e circuit breaker).
 
 Rodar: uvicorn app:app --port 8000
 """
@@ -17,6 +18,8 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from circuit_breaker import CircuitBreaker, CircuitoAberto
+
 app = FastAPI(title="Gateway - C3.A2")
 
 URL_INFERENCIA = os.getenv("URL_INFERENCIA", "http://localhost:8001")
@@ -27,6 +30,16 @@ JWT_EXPIRACAO_MINUTOS = int(os.getenv("JWT_EXPIRACAO_MINUTOS", "60"))
 USUARIO_DEMO = os.getenv("GATEWAY_USUARIO", "admin")
 SENHA_DEMO = os.getenv("GATEWAY_SENHA", "123456")
 RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "10"))
+
+TIMEOUT_INFERENCIA = float(os.getenv("TIMEOUT_INFERENCIA", "5"))
+TENTATIVAS_INFERENCIA = int(os.getenv("TENTATIVAS_INFERENCIA", "3"))
+ESPERA_BASE_SEGUNDOS = float(os.getenv("ESPERA_BASE_SEGUNDOS", "0.5"))
+STATUS_TRANSITORIOS = {502, 503, 504}
+
+disjuntor = CircuitBreaker(
+    limite_falhas=int(os.getenv("CB_LIMITE_FALHAS", "5")),
+    espera_segundos=float(os.getenv("CB_ESPERA_SEGUNDOS", "30")),
+)
 
 # Armazena timestamps das requisicoes por chave de cliente (em memoria)
 historico_requisicoes: dict[str, list[float]] = defaultdict(list)
@@ -86,6 +99,24 @@ def verificar_rate_limit(request: Request, usuario_payload: dict) -> None:
     historico_requisicoes[cliente_id] = timestamps
 
 
+def post_com_retentativa(url: str, payload: dict) -> requests.Response:
+    """Repete so falhas transitorias, com espera de 0,5s, 1s, 2s..."""
+    for tentativa in range(TENTATIVAS_INFERENCIA):
+        try:
+            r = requests.post(url, json=payload, timeout=TIMEOUT_INFERENCIA)
+            if r.status_code >= 500:
+                r.raise_for_status()
+            return r
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as erro:
+            transitorio = not isinstance(erro, requests.HTTPError) or (
+                erro.response is not None
+                and erro.response.status_code in STATUS_TRANSITORIOS
+            )
+            if not transitorio or tentativa == TENTATIVAS_INFERENCIA - 1:
+                raise
+            time.sleep(ESPERA_BASE_SEGUNDOS * 2 ** tentativa)
+
+
 @app.middleware("http")
 async def registrar(request: Request, call_next):
     inicio = time.time()
@@ -121,15 +152,16 @@ def predict(
 ):
     verificar_rate_limit(request, usuario)
     try:
-        r = requests.post(
-            f"{URL_INFERENCIA}/predict",
-            json=entrada.model_dump(),
-            timeout=10,
+        r = disjuntor.chamar(
+            post_com_retentativa, f"{URL_INFERENCIA}/predict", entrada.model_dump()
         )
-        r.raise_for_status()
-        return r.json()
+    except CircuitoAberto as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except requests.RequestException as e:
         raise HTTPException(
             status_code=503,
             detail=f"servico de inferencia indisponivel: {e}",
         )
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return r.json()
