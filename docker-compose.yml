@@ -24,6 +24,7 @@ services:
       JWT_EXPIRACAO_MINUTOS: ${JWT_EXPIRACAO_MINUTOS:-60}
       RATE_LIMIT_POR_MINUTO: ${RATE_LIMIT_POR_MINUTO:-30}
       URL_INFERENCIA: http://inferencia:8001
+      GRPC_INFERENCIA: inferencia-grpc:50051
       URL_INGESTAO: http://ingestao:8002
       URL_RECUPERACAO: http://recuperacao:8003
       URL_GERACAO: http://geracao:8004
@@ -33,10 +34,10 @@ services:
       ESPERA_BASE_SEGUNDOS: ${ESPERA_BASE_SEGUNDOS:-0.5}
       CB_LIMITE_FALHAS: ${CB_LIMITE_FALHAS:-5}
       CB_ESPERA_SEGUNDOS: ${CB_ESPERA_SEGUNDOS:-30}
-    depends_on: [inferencia, ingestao, recuperacao, geracao]
+    depends_on: [inferencia, inferencia-grpc, ingestao, recuperacao, geracao]
     restart: unless-stopped
 
-  # ------------------------------------------- inferencia: API + fila Redis + worker
+  # ------------------- inferencia: REST + fila Redis + worker | gRPC sincrono
   inferencia:
     build: {context: ., dockerfile: inferencia/Dockerfile}
     image: plataforma-ia/inferencia
@@ -46,6 +47,16 @@ services:
       RESULTADO_TTL_SEGUNDOS: ${RESULTADO_TTL_SEGUNDOS:-86400}
     depends_on:
       redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  inferencia-grpc:
+    # Mesma imagem da inferencia, outro processo: servidor gRPC (proto/inferencia.proto).
+    build: {context: ., dockerfile: inferencia/Dockerfile}
+    image: plataforma-ia/inferencia
+    command: ["python", "servidor_grpc.py"]
+    environment:
+      <<: *otel
+      GRPC_PORTA: "50051"
     restart: unless-stopped
 
   worker:
@@ -78,6 +89,7 @@ services:
     environment:
       <<: [*otel, *rabbitmq]
       INDICE_ARQUIVO: /dados/indice.json
+      INDICE_REDIS_URL: ${INDICE_REDIS_URL:-}   # vazio = arquivo no volume
     volumes: [indice-vetorial:/dados]
     depends_on:
       rabbitmq: {condition: service_healthy}
@@ -91,6 +103,7 @@ services:
     environment:
       <<: [*otel, *rabbitmq]
       INDICE_ARQUIVO: /dados/indice.json
+      INDICE_REDIS_URL: ${INDICE_REDIS_URL:-}   # vazio = arquivo no volume
     volumes: [indice-vetorial:/dados]
     depends_on:
       ingestao: {condition: service_started}
