@@ -55,6 +55,20 @@ informe o arquivo:
 Cada arquivo define o Dockerfile, o comando de start (os serviços internos escutam em `::`, porque a rede privada do
 Railway usa IPv6), o healthcheck e quais pastas disparam um novo deploy.
 
+> **Se o build aparecer como "Railpack could not determine how to build the app"**, o Railway não
+> aplicou o arquivo de config. Confira o caminho (começando com `/`) e faça um novo deploy. Como plano B,
+> adicione no serviço a variável `RAILWAY_DOCKERFILE_PATH` com o Dockerfile da tabela abaixo e o comando
+> de start em *Settings → Deploy → Custom Start Command* (o mesmo `startCommand` do JSON).
+>
+> | Serviço | `RAILWAY_DOCKERFILE_PATH` |
+> |---|---|
+> | `gateway` | `gateway/Dockerfile` |
+> | `inferencia`, `inferencia-grpc` | `inferencia/Dockerfile` |
+> | `worker` | `worker/Dockerfile` |
+> | `ingestao`, `worker-indexacao` | `ingestion-service/Dockerfile` |
+> | `recuperacao` | `retrieval-service/Dockerfile` |
+> | `geracao` | `generation-service/Dockerfile` |
+
 ### 3. Variáveis
 
 Em *Project Settings → Shared Variables*, crie (vale para todos os serviços):
