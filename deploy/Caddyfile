@@ -1,0 +1,12 @@
+# Proxy reverso com HTTPS automatico: o Caddy obtem e renova o certificado
+# Let's Encrypt para {$DOMINIO} e redireciona HTTP -> HTTPS sozinho.
+{$DOMINIO} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	# Nao registra log de acesso: ele gravaria o IP de quem acessa (LGPD).
+	reverse_proxy gateway:8000
+}
