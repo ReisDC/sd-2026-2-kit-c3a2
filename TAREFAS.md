@@ -30,14 +30,16 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [X] **9. Secao de conformidade no README**
       Quais dados sao tratados, com qual finalidade e por quanto tempo. (LGPD, Aula 16)
 
-- [ ] **10. Relatorio de trade-offs**
+- [X] **10. Relatorio de trade-offs**
       CAP, custo e latencia do seu sistema.
+      Veja `RELATORIO_TRADEOFFS.md`.
 
 ## Extensoes opcionais
 
 - [ ] Autoescalonamento de workers conforme o tamanho da fila
 - [ ] Componente serverless ou na borda
-- [ ] CI/CD publicando automaticamente a cada commit
+- [X] CI/CD publicando automaticamente a cada commit
+      Imagem do gateway no GHCR a cada push na main: `.github/workflows/publicar-gateway.yml`.
 - [ ] Painel de metricas
 - [ ] Manifests de Kubernetes
 

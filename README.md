@@ -92,6 +92,10 @@ o arquivo e a aula de referência de cada um.
 
 **Entrega:** no seu repositório do GitHub, **sem apresentação oral**. Grupos livres.
 
+Relatório de CAP, custo e latência: [RELATORIO_TRADEOFFS.md](RELATORIO_TRADEOFFS.md).
+O workflow `publicar-gateway.yml` publica a imagem do gateway no GHCR a cada push
+na `main`. Ele publica o container; o deploy da aplicação continua pendente.
+
 ---
 
 ## Aulas de referência
