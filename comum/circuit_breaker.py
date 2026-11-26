@@ -1,5 +1,5 @@
 """
-Circuit breaker reaproveitado do C2.A2.
+Circuit breaker compartilhado pelo gateway e pela geracao.
 
 Estados:
   fechado  -> deixa passar (normal)

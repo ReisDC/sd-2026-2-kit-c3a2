@@ -1,10 +1,9 @@
 """
 API Gateway - porta de entrada unica da plataforma.
 
-JA PRONTO: roteamento para o servico de inferencia e log de requisicoes.
-TAREFA 1: autenticacao por JWT.
-TAREFA 2: limite de requisicoes por cliente (rate limit).
-TAREFA 6: resiliencia (tempo-limite, retentativa com espera progressiva e circuit breaker).
+Seguranca: JWT (TAREFA 1) e rate limit por cliente (TAREFA 2).
+Resiliencia (TAREFA 6): tempo-limite, retentativa com espera progressiva e um
+circuit breaker por servico de destino.
 
 Rodar: uvicorn app:app --port 8000
 """
@@ -17,12 +16,10 @@ from pathlib import Path
 import jwt
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
 
-from circuit_breaker import CircuitBreaker, CircuitoAberto
-
-app = FastAPI(title="Gateway - C3.A2")
+from comum.circuit_breaker import CircuitBreaker, CircuitoAberto
 
 
 def _obrigatoria(nome: str) -> str:
@@ -32,7 +29,6 @@ def _obrigatoria(nome: str) -> str:
     return valor
 
 
-URL_INFERENCIA = os.getenv("URL_INFERENCIA", "http://localhost:8001")
 JWT_SEGREDO = _obrigatoria("JWT_SEGREDO")
 JWT_ALGORITMO = "HS256"
 JWT_EXPIRACAO_MINUTOS = int(os.getenv("JWT_EXPIRACAO_MINUTOS", "60"))
@@ -41,23 +37,32 @@ USUARIO = os.getenv("GATEWAY_USUARIO", "admin")
 SENHA = _obrigatoria("GATEWAY_SENHA")
 RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "30"))
 
-TIMEOUT_INFERENCIA = float(os.getenv("TIMEOUT_INFERENCIA", "5"))
-TENTATIVAS_INFERENCIA = int(os.getenv("TENTATIVAS_INFERENCIA", "3"))
+SERVICOS = {
+    "inferencia": os.getenv("URL_INFERENCIA", "http://localhost:8001"),
+}
+TIMEOUT_PADRAO = float(os.getenv("TIMEOUT_SERVICOS", "5"))
+TIMEOUTS: dict[str, float] = {}
+TENTATIVAS = int(os.getenv("TENTATIVAS_SERVICOS", "3"))
 ESPERA_BASE_SEGUNDOS = float(os.getenv("ESPERA_BASE_SEGUNDOS", "0.5"))
 STATUS_TRANSITORIOS = {502, 503, 504}
 
-disjuntor = CircuitBreaker(
-    limite_falhas=int(os.getenv("CB_LIMITE_FALHAS", "5")),
-    espera_segundos=float(os.getenv("CB_ESPERA_SEGUNDOS", "30")),
-)
+disjuntores = {
+    nome: CircuitBreaker(
+        limite_falhas=int(os.getenv("CB_LIMITE_FALHAS", "5")),
+        espera_segundos=float(os.getenv("CB_ESPERA_SEGUNDOS", "30")),
+    )
+    for nome in SERVICOS
+}
 
-# Armazena timestamps das requisicoes por chave de cliente (em memoria)
+app = FastAPI(title="Gateway - C3.A2")
+
+# Horarios das requisicoes por cliente (em memoria, so os ultimos 60 s).
 historico_requisicoes: dict[str, list[float]] = defaultdict(list)
 metricas = {"total": 0, "erros": 0, "tempo_total_ms": 0.0}
 
 
 class Entrada(BaseModel):
-    texto: str
+    texto: str = Field(min_length=1, max_length=5000)
 
 
 class CredenciaisLogin(BaseModel):
@@ -65,6 +70,7 @@ class CredenciaisLogin(BaseModel):
     senha: str
 
 
+# ---------------------------------------------------------------- seguranca
 def criar_token_jwt(usuario: str) -> str:
     agora = datetime.now(timezone.utc)
     payload = {
@@ -107,11 +113,13 @@ def cliente_autorizado(request: Request, usuario: dict = Depends(exigir_jwt)) ->
     return usuario
 
 
-def post_com_retentativa(url: str, payload: dict) -> requests.Response:
+# -------------------------------------------------------------- resiliencia
+def requisitar_com_retentativa(metodo: str, url: str, timeout: float,
+                               payload=None) -> requests.Response:
     """Repete so falhas transitorias, com espera de 0,5s, 1s, 2s..."""
-    for tentativa in range(TENTATIVAS_INFERENCIA):
+    for tentativa in range(TENTATIVAS):
         try:
-            r = requests.post(url, json=payload, timeout=TIMEOUT_INFERENCIA)
+            r = requests.request(metodo, url, json=payload, timeout=timeout)
             if r.status_code >= 500:
                 r.raise_for_status()
             return r
@@ -120,28 +128,74 @@ def post_com_retentativa(url: str, payload: dict) -> requests.Response:
                 erro.response is not None
                 and erro.response.status_code in STATUS_TRANSITORIOS
             )
-            if not transitorio or tentativa == TENTATIVAS_INFERENCIA - 1:
+            if not transitorio or tentativa == TENTATIVAS - 1:
                 raise
             time.sleep(ESPERA_BASE_SEGUNDOS * 2 ** tentativa)
 
 
+def encaminhar(servico: str, metodo: str, caminho: str, payload=None) -> JSONResponse:
+    """Chama um servico interno protegido pelo circuit breaker dele."""
+    url = f"{SERVICOS[servico].rstrip('/')}{caminho}"
+    timeout = TIMEOUTS.get(servico, TIMEOUT_PADRAO)
+    try:
+        r = disjuntores[servico].chamar(
+            requisitar_com_retentativa, metodo, url, timeout, payload
+        )
+    except CircuitoAberto as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{servico} indisponivel: {e}",
+            headers={"Retry-After": str(int(disjuntores[servico].espera_segundos))},
+        ) from None
+    except requests.Timeout:
+        raise HTTPException(status_code=504,
+                            detail=f"{servico}: tempo-limite excedido") from None
+    except requests.RequestException:
+        raise HTTPException(status_code=503, detail=f"{servico} indisponivel") from None
+
+    try:
+        corpo = r.json()
+    except ValueError:
+        corpo = {"detail": r.text}
+    return JSONResponse(status_code=r.status_code, content=corpo)
+
+
+# -------------------------------------------------------------------- rotas
 @app.middleware("http")
 async def registrar(request: Request, call_next):
     inicio = time.perf_counter()
     resposta = await call_next(request)
     ms = (time.perf_counter() - inicio) * 1000
-    if request.url.path not in {"/metricas", "/metricas/dados"}:
+    if not request.url.path.startswith("/metricas"):
         metricas["total"] += 1
         metricas["erros"] += int(resposta.status_code >= 400)
         metricas["tempo_total_ms"] += ms
+    # So metodo, rota, status e tempo: nada de IP, texto, senha ou token (LGPD).
     print(f"[gateway] {request.method} {request.url.path} "
-          f"-> {resposta.status_code} ({ms:.1f}ms)")
+          f"-> {resposta.status_code} ({ms:.1f}ms)", flush=True)
     return resposta
 
 
 @app.get("/saude")
 def saude():
-    return {"status": "ok"}
+    return {"status": "ok",
+            "disjuntores": {nome: d.estado for nome, d in disjuntores.items()}}
+
+
+@app.post("/login")
+def login(credenciais: CredenciaisLogin):
+    if credenciais.usuario != USUARIO or credenciais.senha != SENHA:
+        raise HTTPException(status_code=401, detail="Credenciais invalidas")
+    return {
+        "access_token": criar_token_jwt(credenciais.usuario),
+        "token_type": "bearer",
+        "expires_in": JWT_EXPIRACAO_MINUTOS * 60,
+    }
+
+
+@app.post("/predict", status_code=202)
+def predict(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
+    return encaminhar("inferencia", "POST", "/predict", entrada.model_dump())
 
 
 @app.get("/metricas", response_class=HTMLResponse)
@@ -157,33 +211,3 @@ def dados_metricas(_: dict = Depends(cliente_autorizado)):
         "erros": metricas["erros"],
         "tempo_medio_ms": round(metricas["tempo_total_ms"] / total, 2) if total else 0,
     }
-
-
-@app.post("/login")
-def login(credenciais: CredenciaisLogin):
-    if credenciais.usuario != USUARIO or credenciais.senha != SENHA:
-        raise HTTPException(status_code=401, detail="Credenciais invalidas")
-    token = criar_token_jwt(credenciais.usuario)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": JWT_EXPIRACAO_MINUTOS * 60,
-    }
-
-
-@app.post("/predict")
-def predict(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
-    try:
-        r = disjuntor.chamar(
-            post_com_retentativa, f"{URL_INFERENCIA}/predict", entrada.model_dump()
-        )
-    except CircuitoAberto as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except requests.RequestException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"servico de inferencia indisponivel: {e}",
-        )
-    if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=r.text)
-    return r.json()
