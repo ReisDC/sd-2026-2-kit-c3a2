@@ -1,9 +1,16 @@
 """
 API Gateway - porta de entrada unica da plataforma.
 
+Rotas publicas:   GET /saude, POST /login, GET /metricas (pagina do painel)
+Rotas com JWT:    POST /predict, GET /resultado/{id}      -> inferencia (fila + worker)
+                  POST /documentos, POST /buscar,
+                  POST /perguntar                         -> RAG (ingestao/recuperacao/geracao)
+                  GET  /metricas/dados
+
 Seguranca: JWT (TAREFA 1) e rate limit por cliente (TAREFA 2).
 Resiliencia (TAREFA 6): tempo-limite, retentativa com espera progressiva e um
 circuit breaker por servico de destino.
+Observabilidade (TAREFA 7): spans OpenTelemetry, propagados aos servicos.
 
 Rodar: uvicorn app:app --port 8000
 """
@@ -12,13 +19,15 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Annotated
 
 import jwt
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from comum import telemetria
 from comum.circuit_breaker import CircuitBreaker, CircuitoAberto
 
 
@@ -39,9 +48,13 @@ RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "30"))
 
 SERVICOS = {
     "inferencia": os.getenv("URL_INFERENCIA", "http://localhost:8001"),
+    "ingestao": os.getenv("URL_INGESTAO", "http://localhost:8002"),
+    "recuperacao": os.getenv("URL_RECUPERACAO", "http://localhost:8003"),
+    "geracao": os.getenv("URL_GERACAO", "http://localhost:8004"),
 }
 TIMEOUT_PADRAO = float(os.getenv("TIMEOUT_SERVICOS", "5"))
-TIMEOUTS: dict[str, float] = {}
+# A geracao espera a recuperacao e o LLM: precisa de mais folga.
+TIMEOUTS = {"geracao": float(os.getenv("TIMEOUT_GERACAO", "30"))}
 TENTATIVAS = int(os.getenv("TENTATIVAS_SERVICOS", "3"))
 ESPERA_BASE_SEGUNDOS = float(os.getenv("ESPERA_BASE_SEGUNDOS", "0.5"))
 STATUS_TRANSITORIOS = {502, 503, 504}
@@ -55,6 +68,7 @@ disjuntores = {
 }
 
 app = FastAPI(title="Gateway - C3.A2")
+telemetria.configurar("gateway", app)
 
 # Horarios das requisicoes por cliente (em memoria, so os ultimos 60 s).
 historico_requisicoes: dict[str, list[float]] = defaultdict(list)
@@ -63,6 +77,20 @@ metricas = {"total": 0, "erros": 0, "tempo_total_ms": 0.0}
 
 class Entrada(BaseModel):
     texto: str = Field(min_length=1, max_length=5000)
+
+
+class Documento(BaseModel):
+    texto: str = Field(min_length=1, max_length=20000)
+    origem: str = Field("desconhecida", max_length=200)
+
+
+class Busca(BaseModel):
+    texto: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(3, ge=1, le=20)
+
+
+class Pergunta(BaseModel):
+    pergunta: str = Field(min_length=1, max_length=2000)
 
 
 class CredenciaisLogin(BaseModel):
@@ -195,7 +223,32 @@ def login(credenciais: CredenciaisLogin):
 
 @app.post("/predict", status_code=202)
 def predict(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
+    """Enfileira a classificacao de sentimento; consulte em /resultado/{id}."""
     return encaminhar("inferencia", "POST", "/predict", entrada.model_dump())
+
+
+@app.get("/resultado/{tarefa_id}")
+def resultado(tarefa_id: str, _: dict = Depends(cliente_autorizado)):
+    return encaminhar("inferencia", "GET", f"/resultado/{tarefa_id}")
+
+
+@app.post("/documentos", status_code=202)
+def documentos(docs: Annotated[list[Documento], Body(min_length=1, max_length=100)],
+               _: dict = Depends(cliente_autorizado)):
+    """Indexa documentos no armazenamento vetorial (assincrono, via fila)."""
+    return encaminhar("ingestao", "POST", "/indexar", [d.model_dump() for d in docs])
+
+
+@app.post("/buscar")
+def buscar(busca: Busca, _: dict = Depends(cliente_autorizado)):
+    """Busca por similaridade no armazenamento vetorial."""
+    return encaminhar("recuperacao", "POST", "/recuperar", busca.model_dump())
+
+
+@app.post("/perguntar")
+def perguntar(pergunta: Pergunta, _: dict = Depends(cliente_autorizado)):
+    """RAG: recupera o contexto e gera a resposta com o LLM."""
+    return encaminhar("geracao", "POST", "/perguntar", pergunta.model_dump())
 
 
 @app.get("/metricas", response_class=HTMLResponse)
