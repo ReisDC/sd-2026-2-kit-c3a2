@@ -1,0 +1,148 @@
+# Blueprint do Render (opcao A de deploy/INSTRUCOES.md).
+# Render > New > Blueprint > selecione este repositorio.
+#
+# Custo: no plano gratuito do Render so existem "web" e "keyvalue". O gateway e o
+# Redis ficam no free; servicos privados (pserv) e workers exigem plano pago
+# (starter). Por isso os servicos internos NAO sao "web": seriam publicos e sem JWT.
+# O Jaeger nao entra aqui (traces ficam desligados sem OTEL_EXPORTER_OTLP_ENDPOINT);
+# veja deploy/INSTRUCOES.md para incluir.
+
+envVarGroups:
+  - name: rabbitmq-credenciais
+    envVars:
+      - key: RABBITMQ_DEFAULT_USER
+        value: plataforma
+      - key: RABBITMQ_DEFAULT_PASS
+        generateValue: true
+
+services:
+  # ------------------------------------------------ publico (HTTPS automatico)
+  - type: web
+    name: gateway
+    runtime: docker
+    plan: free
+    dockerfilePath: ./gateway/Dockerfile
+    dockerContext: .
+    healthCheckPath: /saude
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: JWT_SEGREDO
+        generateValue: true
+      - key: GATEWAY_USUARIO
+        value: admin
+      - key: GATEWAY_SENHA
+        sync: false            # pedido no painel ao criar o Blueprint
+      - key: RATE_LIMIT_POR_MINUTO
+        value: "30"
+      - key: TIMEOUT_SERVICOS
+        value: "10"            # instancias recem-acordadas respondem mais devagar
+      - key: URL_INFERENCIA
+        fromService: {type: pserv, name: inferencia, property: hostport}
+      - key: GRPC_INFERENCIA
+        fromService: {type: pserv, name: inferencia-grpc, property: hostport}
+      - key: URL_INGESTAO
+        fromService: {type: pserv, name: ingestao, property: hostport}
+      - key: URL_RECUPERACAO
+        fromService: {type: pserv, name: recuperacao, property: hostport}
+      - key: URL_GERACAO
+        fromService: {type: pserv, name: geracao, property: hostport}
+
+  # ------------------------------------------------ inferencia (rede privada)
+  - type: pserv
+    name: inferencia
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./inferencia/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: REDIS_URL
+        fromService: {type: keyvalue, name: redis, property: connectionString}
+
+  - type: pserv
+    name: inferencia-grpc
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./inferencia/Dockerfile
+    dockerContext: .
+    dockerCommand: python servidor_grpc.py
+
+  - type: worker
+    name: worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./worker/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: REDIS_URL
+        fromService: {type: keyvalue, name: redis, property: connectionString}
+
+  # ------------------------------------------------ RAG (rede privada)
+  - type: pserv
+    name: ingestao
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./ingestion-service/Dockerfile
+    dockerContext: .
+    envVars:
+      - fromGroup: rabbitmq-credenciais
+      - key: RABBITMQ_HOSTPORT
+        fromService: {type: pserv, name: rabbitmq, property: hostport}
+      - key: INDICE_REDIS_URL
+        fromService: {type: keyvalue, name: redis, property: connectionString}
+
+  - type: worker
+    name: worker-indexacao
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./ingestion-service/Dockerfile
+    dockerContext: .
+    dockerCommand: python worker_indexacao.py
+    envVars:
+      - fromGroup: rabbitmq-credenciais
+      - key: RABBITMQ_HOSTPORT
+        fromService: {type: pserv, name: rabbitmq, property: hostport}
+      - key: INDICE_REDIS_URL
+        fromService: {type: keyvalue, name: redis, property: connectionString}
+
+  - type: pserv
+    name: recuperacao
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./retrieval-service/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: URL_INGESTAO
+        fromService: {type: pserv, name: ingestao, property: hostport}
+
+  - type: pserv
+    name: geracao
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./generation-service/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: URL_RECUPERACAO
+        fromService: {type: pserv, name: recuperacao, property: hostport}
+      - key: LLM_API_KEY
+        sync: false            # deixe vazio para o modo simulado
+
+  # ------------------------------------------------ infraestrutura
+  - type: pserv
+    name: rabbitmq
+    runtime: image
+    image:
+      url: docker.io/library/rabbitmq:3.13-alpine
+    plan: starter
+    envVars:
+      - fromGroup: rabbitmq-credenciais
+    disk:
+      name: rabbitmq-dados
+      mountPath: /var/lib/rabbitmq
+      sizeGB: 1
+
+  - type: keyvalue
+    name: redis
+    plan: free
+    ipAllowList: []            # so a rede privada do Render acessa
+    maxmemoryPolicy: noeviction

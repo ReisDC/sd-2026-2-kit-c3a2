@@ -1,0 +1,18 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "generation-service/Dockerfile",
+    "watchPatterns": [
+      "generation-service/**",
+      "comum/**"
+    ]
+  },
+  "deploy": {
+    "startCommand": "uvicorn app:app --host :: --port 8004 --no-access-log",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/saude",
+    "healthcheckTimeout": 120
+  }
+}
