@@ -213,12 +213,13 @@ Relatório de CAP, custo e latência: [RELATORIO_TRADEOFFS.md](RELATORIO_TRADEOF
 | Usuário e senha | `POST /login` | Autenticar o cliente antes de emitir o token | Não são armazenados; a senha só é comparada com a configurada em variável de ambiente |
 | Token JWT (`sub`, `iat`, `exp`) | Cabeçalho `Authorization` | Autorizar as chamadas às rotas protegidas | Não é guardado no servidor; expira em `JWT_EXPIRACAO_MINUTOS` (60 min por padrão) |
 | Identificador do cliente (usuário do token) | Rate limit do gateway | Limitar requisições por minuto e proteger o serviço contra abuso | Só em memória, com os horários dos últimos 60 s; perdido ao reiniciar o gateway |
-| Texto enviado para classificação | `POST /predict`, fila Redis e worker | Executar a inferência de sentimento solicitada | Fica no Redis só até o worker consumir a tarefa (ou na fila de descarte, se falhar). O Redis roda sem persistência em disco |
+| Texto enviado para classificação | `POST /predict`, fila Redis e worker | Executar a inferência de sentimento solicitada | Fica no Redis só até o worker consumir a tarefa (ou na fila de descarte, se falhar). Localmente o Redis roda sem persistência em disco; na nuvem, o Redis gerenciado pode gravar snapshots |
 | Resultado (sentimento e confiança) | Redis e `GET /resultado/{id}` | Devolver a resposta ao cliente | Expira automaticamente em `RESULTADO_TTL_SEGUNDOS` (24 h por padrão); o texto não é devolvido nem guardado junto |
-| Documentos indexados (texto e origem) | `POST /documentos`, RabbitMQ e volume `indice-vetorial` | Formar a base consultada pelo RAG | **Persistem** no volume até serem removidos pelo responsável (`docker compose down -v` apaga o índice). Não envie documentos com dados pessoais |
+| Texto enviado ao gRPC | `POST /predict-sync`, `POST /predict-lote` | Classificar na hora | Não é armazenado: só fica na memória durante a chamada |
+| Documentos indexados (texto e origem) | `POST /documentos`, RabbitMQ e índice vetorial | Formar a base consultada pelo RAG | **Persistem** até serem removidos pelo responsável (volume `indice-vetorial` localmente; chave `indice:vetorial` no Redis na nuvem). Não envie documentos com dados pessoais |
 | Perguntas ao RAG | `POST /buscar`, `POST /perguntar` | Recuperar trechos e gerar a resposta | Não são armazenadas. **Com `LLM_API_KEY` definida, a pergunta e os trechos são enviados ao provedor do LLM** (operador terceiro); no modo simulado nada sai do servidor |
 | Traces (Jaeger) | Spans de todos os serviços | Diagnóstico de latência e falhas | Só em memória do Jaeger (perdidos ao reiniciar). Guardam rota, status, tempos, ids de tarefa e tamanhos; nunca o texto, a senha ou o token |
-| Logs | Saída dos containers | Diagnóstico | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada. O log de acesso do uvicorn e do Caddy está desligado porque gravaria o IP |
+| Logs | Saída dos containers | Diagnóstico | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada. O log de acesso do uvicorn está desligado porque gravaria o IP |
 
 **Base legal:** execução do serviço solicitado pelo próprio titular (art. 7º, V). Nenhum dado é usado para
 treinar o modelo nem para outra finalidade. O único compartilhamento possível é com o provedor do LLM,
@@ -233,7 +234,8 @@ pela rede privada do Docker. Os containers rodam com usuário sem privilégios.
 
 **Direitos do titular (art. 18):** como não há cadastro, o titular pode pedir a exclusão de uma tarefa
 informando o id recebido; o responsável apaga a chave `resultado:<id>` do Redis (que de todo modo expira
-sozinha). Documentos indexados podem ser removidos apagando o volume `indice-vetorial`.
+sozinha). Documentos indexados podem ser removidos apagando o volume `indice-vetorial` (ou a chave
+`indice:vetorial` do Redis, na nuvem).
 
 ---
 
