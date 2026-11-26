@@ -16,7 +16,11 @@ autenticação JWT, rate limit, tempo-limite, retentativa e circuit breaker.
 
 ## URL pública
 
-> **URL:** `https://<preencher-após-o-deploy>` (Railway ou Render: passo a passo em [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md))
+> **URL:** https://plataforma-production-333fa9a0.up.railway.app
+>
+> Publicada no Railway (perfil `free` do [.railway/railway.ts](.railway/railway.ts)), com HTTPS (Let's Encrypt)
+> e redirecionamento automático de HTTP para HTTPS. Comece por `GET /saude` e `GET /docs`; as demais rotas
+> exigem o token de `POST /login`. Passo a passo do deploy em [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md).
 
 ---
 

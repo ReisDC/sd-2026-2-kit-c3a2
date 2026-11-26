@@ -19,11 +19,10 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
       O sistema inteiro deve subir com UM comando. (Aula 14)
       `docker compose up --build`: 11 containers (servicos + Redis, RabbitMQ e Jaeger).
 
-- [ ] **5. Deploy em nuvem (free tier)**
+- [X] **5. Deploy em nuvem (free tier)**
       Publicar e informar a URL publica no README. (Aula 13)
-      Preparado: Railway (`.railway/railway.ts`, IaC; perfil Free com o `Dockerfile`
-      da raiz) e Render (`render.yaml`), passo a
-      passo em `deploy/INSTRUCOES.md`. Falta publicar e preencher a URL no README.
+      https://plataforma-production-333fa9a0.up.railway.app (Railway, plano Free,
+      IaC em `.railway/railway.ts`). Alternativa: Render (`render.yaml`).
 
 - [X] **6. Resiliencia**
       Tempo-limite, retentativa com espera progressiva e circuit breaker. (Aula 11)
@@ -32,10 +31,10 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
       Rastreamento distribuido cobrindo gateway -> fila -> worker. (Aula 15)
       OpenTelemetry em todos os servicos + Jaeger (:16686); contexto propagado
       pela fila Redis e pelos headers do RabbitMQ (`comum/telemetria.py`).
+      Em producao, a aba Traces do Railway mostra edge -> gateway -> fila -> worker.
 
-- [ ] **8. HTTPS** no servico publicado. (Aula 16)
-      Railway e Render emitem o certificado do dominio publico automaticamente.
-      Fica concluido junto com o deploy.
+- [X] **8. HTTPS** no servico publicado. (Aula 16)
+      Certificado Let's Encrypt emitido pelo Railway; HTTP redireciona (301) para HTTPS.
 
 - [X] **9. Secao de conformidade no README**
       Quais dados sao tratados, com qual finalidade e por quanto tempo. (LGPD, Aula 16)
@@ -58,6 +57,6 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 ## Antes de entregar
 
 - [ ] Clone em OUTRA maquina e rode o comando unico - funciona?
-- [ ] A URL publica esta no ar?
+- [X] A URL publica esta no ar?
 - [X] Toda configuracao esta em variavel de ambiente (nada fixo no codigo)?
 - [X] Os logs estao livres de dados pessoais?
