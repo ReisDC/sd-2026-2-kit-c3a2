@@ -21,7 +21,7 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 
 - [ ] **5. Deploy em nuvem (free tier)**
       Publicar e informar a URL publica no README. (Aula 13)
-      Preparado: Railway (`deploy/railway/*.json`) e Render (`render.yaml`), passo a
+      Preparado: Railway (`.railway/railway.ts`, IaC) e Render (`render.yaml`), passo a
       passo em `deploy/INSTRUCOES.md`. Falta publicar e preencher a URL no README.
 
 - [X] **6. Resiliencia**

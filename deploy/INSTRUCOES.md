@@ -10,113 +10,79 @@ Diferenças em relação ao ambiente local:
 
 - **Índice vetorial no Redis.** Railway e Render não deixam montar o mesmo volume em dois serviços.
   Por isso, na nuvem, a ingestão e o worker de indexação usam `INDICE_REDIS_URL` em vez do arquivo.
-- **Uma config por serviço.** O build usa a raiz do repositório como contexto, igual ao compose.
+- **Mesmo build do compose.** Cada serviço usa o próprio Dockerfile com a raiz do repositório como contexto.
 
 | | Opção B: Railway (recomendada) | Opção A: Render |
 |---|---|---|
 | Arquitetura completa | sim | sim |
 | Custo | crédito do período de teste (trial); depois, plano Hobby | gateway e Redis grátis; demais serviços no plano *starter* (pago) |
 | HTTPS | `https://<nome>.up.railway.app` | `https://<nome>.onrender.com` |
-| Configuração | `deploy/railway/<servico>.json` | `render.yaml` (Blueprint) |
+| Configuração | `.railway/railway.ts` (infraestrutura como código) | `render.yaml` (Blueprint) |
 
 ---
 
-## Opção B: Railway (recomendada)
+## Opção B: Railway (recomendada), com infraestrutura como código
 
-### 1. Projeto e infraestrutura
+Toda a infraestrutura do Railway está descrita em [.railway/railway.ts](../.railway/railway.ts), no
+formato de [infraestrutura como código](https://docs.railway.com/infrastructure-as-code) do Railway: os
+11 serviços, o Redis, o volume do RabbitMQ, o Dockerfile e o comando de cada serviço, healthchecks e as
+variáveis que ligam um serviço ao outro pela rede privada. Não é preciso criar serviço por serviço no painel.
 
-1. Crie a conta em railway.app e conecte o GitHub.
-2. **New Project → Empty Project.**
-3. **+ Create → Database → Redis.** Mantenha o nome do serviço como `Redis`.
-4. **+ Create → Docker Image →** `rabbitmq:3.13-alpine`. Renomeie para `rabbitmq` e, em *Variables*, defina:
-   - `RABBITMQ_DEFAULT_USER=plataforma`
-   - `RABBITMQ_DEFAULT_PASS=<gere uma senha só com letras e números>`
+> O formato antigo (`railway.json` por serviço) foi descontinuado pelo Railway e não é mais aplicado
+> em serviços novos. Por isso o build caía no Railpack ("could not determine how to build the app").
 
-   Em *Settings*, adicione um volume em `/var/lib/rabbitmq`.
-5. **+ Create → Docker Image →** `jaegertracing/all-in-one:1.62.0`. Renomeie para `jaeger` e defina `COLLECTOR_OTLP_ENABLED=true`.
+### 1. Pré-requisitos
 
-### 2. Serviços da aplicação
+- Conta no railway.app conectada ao GitHub, com acesso a este repositório.
+- [Railway CLI](https://docs.railway.com/cli) 5.42.1 ou mais nova (`railway --version`) e Node.js 22+.
+- Na raiz do repositório: `npm install` (instala o pacote `railway`, que o `railway.ts` importa).
 
-Para cada linha da tabela: **+ Create → GitHub Repo →** este repositório. Renomeie o serviço
-**exatamente** com o nome da tabela. Depois, em *Settings → Config-as-code → Railway Config File*,
-informe o arquivo:
-
-| Serviço | Railway Config File |
-|---|---|
-| `gateway` | `/deploy/railway/gateway.json` |
-| `inferencia` | `/deploy/railway/inferencia.json` |
-| `inferencia-grpc` | `/deploy/railway/inferencia-grpc.json` |
-| `worker` | `/deploy/railway/worker.json` |
-| `ingestao` | `/deploy/railway/ingestao.json` |
-| `worker-indexacao` | `/deploy/railway/worker-indexacao.json` |
-| `recuperacao` | `/deploy/railway/recuperacao.json` |
-| `geracao` | `/deploy/railway/geracao.json` |
-
-Cada arquivo define o Dockerfile, o comando de start (os serviços internos escutam em `::`, porque a rede privada do
-Railway usa IPv6), o healthcheck e quais pastas disparam um novo deploy.
-
-> **Se o build aparecer como "Railpack could not determine how to build the app"**, o Railway não
-> aplicou o arquivo de config. Confira o caminho (começando com `/`) e faça um novo deploy. Como plano B,
-> adicione no serviço a variável `RAILWAY_DOCKERFILE_PATH` com o Dockerfile da tabela abaixo e o comando
-> de start em *Settings → Deploy → Custom Start Command* (o mesmo `startCommand` do JSON).
->
-> | Serviço | `RAILWAY_DOCKERFILE_PATH` |
-> |---|---|
-> | `gateway` | `gateway/Dockerfile` |
-> | `inferencia`, `inferencia-grpc` | `inferencia/Dockerfile` |
-> | `worker` | `worker/Dockerfile` |
-> | `ingestao`, `worker-indexacao` | `ingestion-service/Dockerfile` |
-> | `recuperacao` | `retrieval-service/Dockerfile` |
-> | `geracao` | `generation-service/Dockerfile` |
-
-### 3. Variáveis
-
-Em *Project Settings → Shared Variables*, crie (vale para todos os serviços):
-
-```
-OTEL_EXPORTER_OTLP_ENDPOINT=http://${{jaeger.RAILWAY_PRIVATE_DOMAIN}}:4318
-```
-
-Em cada serviço (*Variables → Raw Editor*):
+### 2. Criar o projeto e aplicar
 
 ```bash
-# gateway
-JWT_SEGREDO=<openssl rand -hex 32>
-GATEWAY_USUARIO=admin
-GATEWAY_SENHA=<senha forte>
-URL_INFERENCIA=http://${{inferencia.RAILWAY_PRIVATE_DOMAIN}}:8001
-GRPC_INFERENCIA=${{inferencia-grpc.RAILWAY_PRIVATE_DOMAIN}}:50051
-URL_INGESTAO=http://${{ingestao.RAILWAY_PRIVATE_DOMAIN}}:8002
-URL_RECUPERACAO=http://${{recuperacao.RAILWAY_PRIVATE_DOMAIN}}:8003
-URL_GERACAO=http://${{geracao.RAILWAY_PRIVATE_DOMAIN}}:8004
-
-# inferencia  e  worker
-REDIS_URL=${{Redis.REDIS_URL}}
-
-# inferencia-grpc
-GRPC_PORTA=50051
-
-# ingestao  e  worker-indexacao
-RABBITMQ_URL=amqp://${{rabbitmq.RABBITMQ_DEFAULT_USER}}:${{rabbitmq.RABBITMQ_DEFAULT_PASS}}@${{rabbitmq.RAILWAY_PRIVATE_DOMAIN}}:5672/%2F
-INDICE_REDIS_URL=${{Redis.REDIS_URL}}
-
-# recuperacao
-URL_INGESTAO=http://${{ingestao.RAILWAY_PRIVATE_DOMAIN}}:8002
-
-# geracao
-URL_RECUPERACAO=http://${{recuperacao.RAILWAY_PRIVATE_DOMAIN}}:8003
-LLM_API_KEY=            # vazio = modo simulado
+railway login
+railway init                 # cria um projeto vazio (ou: railway link, para um projeto existente)
+railway config plan          # mostra o que será criado; não altera nada
+railway config apply         # cria serviços, Redis, volume e variáveis
 ```
+
+Se você já tinha criado serviços manualmente com os mesmos nomes, apague-os antes ou rode
+`railway config pull` para comparar. Um serviço não pode ser gerenciado ao mesmo tempo pelo IaC e pelo painel.
+
+### 3. Segredos (uma vez)
+
+Os segredos não ficam no repositório. No `railway.ts` eles estão marcados com `preserve()`, então o
+`apply` mantém o valor definido no painel. Depois do primeiro `apply`, defina em *Variables*:
+
+| Serviço | Variável | Valor |
+|---|---|---|
+| `gateway` | `JWT_SEGREDO` | `openssl rand -hex 32` |
+| `gateway` | `GATEWAY_SENHA` | senha forte do login |
+| `rabbitmq` | `RABBITMQ_DEFAULT_PASS` | só letras e números (vai dentro de uma URL) |
+| `geracao` | `LLM_API_KEY` | opcional; vazio = modo simulado |
+
+Em seguida faça *Redeploy* do `gateway`, do `rabbitmq`, da `ingestao` e do `worker-indexacao`.
 
 ### 4. Domínio público com HTTPS
 
-No serviço `gateway`, vá em *Settings → Networking → Generate Domain* e informe a porta **8000**.
-O Railway entrega `https://<nome>.up.railway.app` com certificado válido. **Só o gateway** recebe domínio.
+No serviço `gateway`, abra *Settings → Networking → Generate Domain* e informe a porta **8000**. O
+Railway entrega `https://<nome>.up.railway.app` com certificado válido. Os domínios gerados pelo Railway
+não ficam no `railway.ts`, por isso esse passo é manual. **Só o gateway** recebe domínio.
 
 ### 5. Ver os traces
 
 O Jaeger não tem autenticação. Para capturar evidências, gere um domínio temporário para o serviço
 `jaeger` na porta **16686**, consulte os traces e remova o domínio em seguida.
+
+### Observações
+
+- **Rede privada IPv6:** os serviços internos escutam em `::`; o gateway escuta em `0.0.0.0` para o proxy público.
+- **Índice vetorial no Redis:** o Railway não deixa montar o mesmo volume em dois serviços, então a
+  ingestão e o worker de indexação compartilham o índice pelo Redis (`INDICE_REDIS_URL`).
+- **Deploy contínuo:** cada serviço está ligado à branch `main` e só é refeito quando muda a pasta dele
+  ou `comum/` (`watchPatterns`).
+- **Mudanças na infraestrutura:** edite o `railway.ts` e rode `railway config plan` / `apply` de novo.
+  O Railway não lê a pasta `.railway/` sozinho durante os deploys.
 
 ---
 

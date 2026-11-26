@@ -8,3 +8,5 @@ venv
 **/indice.json
 .env
 *.md
+node_modules
+.railway

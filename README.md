@@ -191,8 +191,8 @@ não tem segredos fixos: sem `JWT_SEGREDO` ou `GATEWAY_SENHA`, o gateway nem sob
 
 Veja [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md). Há duas opções com os mesmos Dockerfiles:
 
-- **Railway** (recomendada): uma config por serviço em [deploy/railway/](deploy/railway/), com Redis e
-  RabbitMQ no próprio projeto.
+- **Railway** (recomendada): infraestrutura como código em [.railway/railway.ts](.railway/railway.ts)
+  (`railway config apply` cria os 11 serviços, o Redis e o RabbitMQ).
 - **Render**: Blueprint em [render.yaml](render.yaml).
 
 Nas duas, só o gateway recebe domínio público, com **HTTPS automático**; o resto fica na rede privada.
@@ -216,7 +216,8 @@ O workflow [.github/workflows/publicar-imagens.yml](.github/workflows/publicar-i
 ├── retrieval-service/       # busca vetorial
 ├── generation-service/      # geração (RAG) + cliente de LLM
 ├── comum/                   # telemetria, logs, circuit breaker, embeddings, modelo, fila Redis
-├── deploy/                  # instruções de deploy + configs do Railway
+├── .railway/railway.ts      # infraestrutura como código do Railway
+├── deploy/                  # instruções de deploy
 ├── docker-compose.yml       # sistema inteiro com um comando
 ├── render.yaml              # Blueprint do Render
 ├── RELATORIO_TRADEOFFS.md   # CAP, custo e latência
