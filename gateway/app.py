@@ -24,14 +24,22 @@ from circuit_breaker import CircuitBreaker, CircuitoAberto
 
 app = FastAPI(title="Gateway - C3.A2")
 
+
+def _obrigatoria(nome: str) -> str:
+    valor = os.getenv(nome)
+    if not valor:
+        raise RuntimeError(f"variavel de ambiente {nome} nao definida (veja .env.example)")
+    return valor
+
+
 URL_INFERENCIA = os.getenv("URL_INFERENCIA", "http://localhost:8001")
-JWT_SEGREDO = os.getenv("JWT_SEGREDO", "segredo-desenvolvimento-trocar-em-prod")
+JWT_SEGREDO = _obrigatoria("JWT_SEGREDO")
 JWT_ALGORITMO = "HS256"
 JWT_EXPIRACAO_MINUTOS = int(os.getenv("JWT_EXPIRACAO_MINUTOS", "60"))
 
-USUARIO_DEMO = os.getenv("GATEWAY_USUARIO", "admin")
-SENHA_DEMO = os.getenv("GATEWAY_SENHA", "123456")
-RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "10"))
+USUARIO = os.getenv("GATEWAY_USUARIO", "admin")
+SENHA = _obrigatoria("GATEWAY_SENHA")
+RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "30"))
 
 TIMEOUT_INFERENCIA = float(os.getenv("TIMEOUT_INFERENCIA", "5"))
 TENTATIVAS_INFERENCIA = int(os.getenv("TENTATIVAS_INFERENCIA", "3"))
@@ -75,31 +83,28 @@ def exigir_jwt(authorization: str | None = Header(default=None)) -> dict:
         )
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(token, JWT_SEGREDO, algorithms=[JWT_ALGORITMO])
-        return payload
+        return jwt.decode(token, JWT_SEGREDO, algorithms=[JWT_ALGORITMO])
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token JWT expirado")
+        raise HTTPException(status_code=401, detail="Token JWT expirado") from None
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token JWT invalido")
+        raise HTTPException(status_code=401, detail="Token JWT invalido") from None
 
 
-def verificar_rate_limit(request: Request, usuario_payload: dict) -> None:
-    cliente_id = usuario_payload.get("sub") or (
-        request.client.host if request.client else "anonimo"
-    )
+def cliente_autorizado(request: Request, usuario: dict = Depends(exigir_jwt)) -> dict:
+    """JWT valido + rate limit por cliente (janela deslizante de 60 s)."""
+    cliente_id = usuario.get("sub") or (request.client.host if request.client else "anonimo")
     agora = time.time()
-    janela_inicio = agora - 60.0
-
-    # Mantem apenas requisicoes dos ultimos 60 segundos
-    timestamps = [t for t in historico_requisicoes[cliente_id] if t > janela_inicio]
-    if len(timestamps) >= RATE_LIMIT_POR_MINUTO:
+    recentes = [t for t in historico_requisicoes[cliente_id] if t > agora - 60.0]
+    if len(recentes) >= RATE_LIMIT_POR_MINUTO:
+        historico_requisicoes[cliente_id] = recentes
         raise HTTPException(
             status_code=429,
             detail=f"Limite de {RATE_LIMIT_POR_MINUTO} requisicoes por minuto excedido",
+            headers={"Retry-After": str(int(60 - (agora - recentes[0])) + 1)},
         )
-
-    timestamps.append(agora)
-    historico_requisicoes[cliente_id] = timestamps
+    recentes.append(agora)
+    historico_requisicoes[cliente_id] = recentes
+    return usuario
 
 
 def post_com_retentativa(url: str, payload: dict) -> requests.Response:
@@ -145,8 +150,7 @@ def painel_metricas():
 
 
 @app.get("/metricas/dados")
-async def dados_metricas(request: Request, usuario: dict = Depends(exigir_jwt)):
-    verificar_rate_limit(request, usuario)
+def dados_metricas(_: dict = Depends(cliente_autorizado)):
     total = metricas["total"]
     return {
         "total": total,
@@ -157,7 +161,7 @@ async def dados_metricas(request: Request, usuario: dict = Depends(exigir_jwt)):
 
 @app.post("/login")
 def login(credenciais: CredenciaisLogin):
-    if credenciais.usuario != USUARIO_DEMO or credenciais.senha != SENHA_DEMO:
+    if credenciais.usuario != USUARIO or credenciais.senha != SENHA:
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
     token = criar_token_jwt(credenciais.usuario)
     return {
@@ -168,12 +172,7 @@ def login(credenciais: CredenciaisLogin):
 
 
 @app.post("/predict")
-def predict(
-    entrada: Entrada,
-    request: Request,
-    usuario: dict = Depends(exigir_jwt),
-):
-    verificar_rate_limit(request, usuario)
+def predict(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
     try:
         r = disjuntor.chamar(
             post_com_retentativa, f"{URL_INFERENCIA}/predict", entrada.model_dump()
