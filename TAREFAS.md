@@ -17,12 +17,12 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 
 - [X] **4. docker-compose completo**
       O sistema inteiro deve subir com UM comando. (Aula 14)
-      `docker compose up --build`: 10 containers (servicos + Redis, RabbitMQ e Jaeger).
+      `docker compose up --build`: 11 containers (servicos + Redis, RabbitMQ e Jaeger).
 
 - [ ] **5. Deploy em nuvem (free tier)**
       Publicar e informar a URL publica no README. (Aula 13)
-      Preparado: `docker-compose.prod.yml` + `deploy/INSTRUCOES.md` (VM gratuita).
-      Falta subir na VM e preencher a URL no README.
+      Preparado: Railway (`deploy/railway/*.json`) e Render (`render.yaml`), passo a
+      passo em `deploy/INSTRUCOES.md`. Falta publicar e preencher a URL no README.
 
 - [X] **6. Resiliencia**
       Tempo-limite, retentativa com espera progressiva e circuit breaker. (Aula 11)
@@ -33,7 +33,7 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
       pela fila Redis e pelos headers do RabbitMQ (`comum/telemetria.py`).
 
 - [ ] **8. HTTPS** no servico publicado. (Aula 16)
-      Preparado: Caddy com Let's Encrypt automatico (`deploy/Caddyfile`).
+      Railway e Render emitem o certificado do dominio publico automaticamente.
       Fica concluido junto com o deploy.
 
 - [X] **9. Secao de conformidade no README**
