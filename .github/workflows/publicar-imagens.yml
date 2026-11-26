@@ -20,7 +20,7 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
       - name: Checar sintaxe do Python
-        run: python3 -m compileall -q comum gateway inferencia worker ingestion-service retrieval-service generation-service
+        run: python3 -m compileall -q comum gateway inferencia worker ingestion-service retrieval-service generation-service plataforma.py
 
   publicar:
     needs: validar
@@ -31,6 +31,7 @@ jobs:
     strategy:
       matrix:
         servico:
+          - {nome: plataforma, dockerfile: Dockerfile}
           - {nome: gateway, dockerfile: gateway/Dockerfile}
           - {nome: inferencia, dockerfile: inferencia/Dockerfile}
           - {nome: worker, dockerfile: worker/Dockerfile}
