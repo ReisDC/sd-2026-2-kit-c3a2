@@ -1,27 +1,63 @@
 # Relatório de trade-offs
 
-**CAP**
+## CAP
 
-CAP relaciona consistência e disponibilidade durante uma partição de rede.
-O projeto não usa dados replicados, então não recebe aqui uma classificação CP/AP.
-Se a rede falhar entre gateway e inferência, a requisição retorna erro 503.
-Cada serviço é um ponto único de falha; não há redundância para manter o atendimento.
+Durante uma partição de rede, o sistema precisa escolher entre consistência e disponibilidade.
+Cada parte da plataforma escolhe de um jeito:
 
-**Custo**
+- **Gateway → serviços:** se a rede até um serviço cair, o gateway não inventa resposta. Ele responde
+  503/504 e o circuit breaker passa a recusar na hora. Nesse caminho a plataforma prefere **C**: só
+  devolve resultado verdadeiro e abre mão de atender.
+- **Inferência assíncrona (Redis + worker):** o `POST /predict` continua aceitando tarefas mesmo com todos
+  os workers fora, porque só depende do Redis. A resposta chega depois (consistência eventual): o cliente
+  vê `na_fila` até o worker voltar. Para a escrita, esse caminho é **A**.
+- **Indexação (RabbitMQ + worker):** mesma ideia. O documento é aceito (202) e entra no índice quando o
+  worker consumir. Até lá, `/buscar` devolve o índice antigo: dado desatualizado em vez de erro, ou seja, **A**.
+- **Geração (RAG):** se o LLM falhar, a geração responde com os trechos recuperados (degradação elegante).
+  Prefere **A** a uma resposta completa.
 
-O uso de containers permite rodar os serviços na mesma máquina para a demonstração.
-Separá-los facilita manutenção, mas aumenta o consumo de memória e as chamadas de
-rede. Um plano gratuito de nuvem pode reduzir o custo da entrega, dependendo dos
-limites do provedor. O deploy ainda está pendente.
+Não há réplicas: Redis, RabbitMQ, o volume do índice e o Jaeger são pontos únicos de falha. Replicá-los
+(Redis Sentinel, cluster do RabbitMQ, banco vetorial distribuído) traria disponibilidade, mas custaria
+mais memória e máquinas do que o free tier oferece.
 
-**Latência**
+## Custo
 
-O gateway precisa esperar a resposta da inferência. O timeout padrão é de 5 segundos
-por tentativa, com até 3 tentativas e espera progressiva entre elas. Isso ajuda em
-falhas temporárias, mas faz o cliente esperar mais. O circuit breaker recusa novas
-chamadas temporariamente quando o serviço acumula falhas.
+- **Uma VM gratuita** (Oracle Always Free, ou e2-micro/t3.micro com swap) roda os 10 containers. O custo
+  é zero, mas o sistema todo depende de uma única máquina.
+- PaaS gratuitos (Render, Railway) seriam mais simples, mas não rodam workers nem brokers de graça. Para
+  manter fila, worker e armazenamento vetorial, escolhemos a VM.
+- **Microsserviços custam memória:** cada serviço Python ocupa cerca de 60–120 MB, e o RabbitMQ sozinho
+  ~150 MB. Um monólito gastaria menos, mas perderia o escalonamento independente (ex.: `--scale worker=3`
+  sem duplicar o gateway) e o isolamento de falhas.
+- **Dois brokers** (Redis para a inferência e RabbitMQ para a indexação) é mais um container para operar.
+  Em troca, a indexação ganha confirmação de publicação, `ack` manual e dead letter nativa, e a inferência
+  usa o Redis, que já guarda os resultados.
+- **LLM real** cobra por token. O modo simulado deixa a plataforma funcionando sem custo e offline.
+- **Jaeger em memória:** não precisa de banco nem de armazenamento pago, mas perde os traces ao reiniciar.
 
-**Limites atuais**
+## Latência
 
-Ainda falta integrar a inferência e completar os outros serviços. Não foram feitos
-testes de carga; portanto, não há medidas de capacidade ou latência real do sistema.
+- **Gateway:** cada salto HTTP interno soma ~1–5 ms na rede do Docker. O rate limit e a validação do JWT
+  custam microssegundos.
+- **Inferência assíncrona:** o `POST /predict` volta em poucos milissegundos porque só enfileira. A
+  latência real (fila + modelo, ~1–10 ms por texto) aparece no tempo até o resultado ficar `pronto`, e o
+  cliente precisa consultar de novo. Trocamos a latência percebida pelo cliente por vazão e isolamento:
+  picos de carga ficam na fila em vez de derrubar a API.
+- **RAG:** `/perguntar` passa por gateway → geração → recuperação → ingestão. A recuperação lê o índice
+  inteiro e recalcula o vocabulário a cada busca. Isso é aceitável com poucos documentos, mas cresce
+  linearmente; com muitos documentos seria preciso um banco vetorial com índice ANN (ex.: Qdrant, pgvector).
+  Com LLM real, a chamada externa (centenas de ms a segundos) domina o tempo total.
+- **Resiliência tem preço:** com tempo-limite de 5 s, 3 tentativas e esperas de 0,5 s + 1 s, o pior caso
+  antes de devolver erro é ~16,5 s. O circuit breaker corta esse custo: aberto, a resposta 503 é imediata.
+  A geração tem tempo-limite maior (30 s) porque espera o LLM.
+- **Tracing:** os spans são exportados em lote (`BatchSpanProcessor`), fora do caminho da requisição. O
+  custo é pequeno e serve para enxergar onde o tempo é gasto.
+
+## Limites conhecidos
+
+- Não foram feitos testes de carga; os números acima são estimativas da arquitetura, não medições.
+- O rate limit e as métricas ficam em memória do gateway. Com várias réplicas do gateway, seria preciso
+  movê-los para o Redis.
+- Uma retentativa do `POST /predict` depois de um tempo-limite pode enfileirar a mesma tarefa duas vezes.
+  O efeito é inofensivo (a classificação é idempotente), mas gera trabalho extra. No índice, documentos
+  repetidos já são descartados.
