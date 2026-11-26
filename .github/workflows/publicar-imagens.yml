@@ -1,0 +1,54 @@
+name: Publicar imagens
+
+# CI/CD: a cada push na main, valida o compose e publica a imagem de cada
+# servico no GitHub Container Registry (ghcr.io).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar docker-compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          DOMINIO=exemplo.sslip.io docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+      - name: Checar sintaxe do Python
+        run: python3 -m compileall -q comum gateway inferencia worker ingestion-service retrieval-service generation-service
+
+  publicar:
+    needs: validar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        servico:
+          - {nome: gateway, dockerfile: gateway/Dockerfile}
+          - {nome: inferencia, dockerfile: inferencia/Dockerfile}
+          - {nome: worker, dockerfile: worker/Dockerfile}
+          - {nome: ingestao, dockerfile: ingestion-service/Dockerfile}
+          - {nome: recuperacao, dockerfile: retrieval-service/Dockerfile}
+          - {nome: geracao, dockerfile: generation-service/Dockerfile}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir e publicar ${{ matrix.servico.nome }}
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOME: ${{ matrix.servico.nome }}
+          DOCKERFILE: ${{ matrix.servico.dockerfile }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          IMAGEM="ghcr.io/${GITHUB_REPOSITORY,,}/$NOME"
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -f "$DOCKERFILE" -t "$IMAGEM:latest" -t "$IMAGEM:$GITHUB_SHA" .
+          docker push --all-tags "$IMAGEM"
