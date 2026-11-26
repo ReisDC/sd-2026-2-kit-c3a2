@@ -129,27 +129,29 @@ sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funci
 
 ## Conformidade com a LGPD
 
-A plataforma recebe um texto, classifica o sentimento e devolve o resultado. Abaixo estão
-os dados tratados, a finalidade de cada um e por quanto tempo ficam guardados.
-
 | Dado | Onde aparece | Finalidade | Retenção |
 |---|---|---|---|
 | Usuário e senha | `POST /login` | Autenticar o cliente antes de emitir o token | Não são armazenados; a senha só é comparada com a configurada em variável de ambiente |
 | Token JWT (`sub`, `iat`, `exp`) | Cabeçalho `Authorization` | Autorizar as chamadas às rotas protegidas | Não é guardado no servidor; expira em `JWT_EXPIRACAO_MINUTOS` (60 min por padrão) |
-| Identificador do cliente (usuário do token ou IP) | Rate limit do gateway | Limitar requisições por minuto e proteger o serviço contra abuso | Só em memória, com horários dos últimos 60 s; perdido ao reiniciar o gateway |
-| Texto enviado | `POST /predict`, fila e worker | Executar a inferência de sentimento solicitada pelo cliente | Fica no Redis com o resultado até o container ser recriado; não há volume persistente |
-| Resultado (sentimento e confiança) | Redis e `GET /resultado/{id}` | Devolver a resposta ao cliente | Mesmo prazo do texto |
-| Logs | Saída dos containers | Diagnóstico e observabilidade | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada; nunca o texto, a senha ou o token |
+| Identificador do cliente (usuário do token) | Rate limit do gateway | Limitar requisições por minuto e proteger o serviço contra abuso | Só em memória, com os horários dos últimos 60 s; perdido ao reiniciar o gateway |
+| Texto enviado para classificação | `POST /predict`, fila Redis e worker | Executar a inferência de sentimento solicitada | Fica no Redis só até o worker consumir a tarefa (ou na fila de descarte, se falhar). O Redis roda sem persistência em disco |
+| Resultado (sentimento e confiança) | Redis e `GET /resultado/{id}` | Devolver a resposta ao cliente | Expira automaticamente em `RESULTADO_TTL_SEGUNDOS` (24 h por padrão); o texto não é devolvido nem guardado junto |
+| Documentos indexados (texto e origem) | `POST /documentos`, RabbitMQ e volume `indice-vetorial` | Formar a base consultada pelo RAG | **Persistem** no volume até serem removidos pelo responsável (`docker compose down -v` apaga o índice). Não envie documentos com dados pessoais |
+| Perguntas ao RAG | `POST /buscar`, `POST /perguntar` | Recuperar trechos e gerar a resposta | Não são armazenadas. **Com `LLM_API_KEY` definida, a pergunta e os trechos são enviados ao provedor do LLM** (operador terceiro); no modo simulado nada sai do servidor |
+| Traces (Jaeger) | Spans de todos os serviços | Diagnóstico de latência e falhas | Só em memória do Jaeger (perdidos ao reiniciar). Guardam rota, status, tempos, ids de tarefa e tamanhos; nunca o texto, a senha ou o token |
+| Logs | Saída dos containers | Diagnóstico | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada. O log de acesso do uvicorn e do Caddy está desligado porque gravaria o IP |
 
-**Base legal:** execução do serviço solicitado pelo próprio titular (art. 7º, V). Nenhum dado é
-usado para treinar o modelo, compartilhado com terceiros ou usado para outra finalidade.
+**Base legal:** execução do serviço solicitado pelo próprio titular (art. 7º, V). Nenhum dado é usado para
+treinar o modelo nem para outra finalidade. O único compartilhamento possível é com o provedor do LLM,
+quando configurado.
 
-**Minimização:** o serviço não pede nome, CPF, e-mail nem qualquer outro dado pessoal. O texto
-é o único conteúdo livre; recomenda-se não enviar dados pessoais nele.
+**Minimização:** o serviço não pede nome, CPF, e-mail nem qualquer outro dado pessoal. O texto é o único
+conteúdo livre; recomenda-se não enviar dados pessoais nele.
 
-**Segurança (art. 46):** rotas protegidas por JWT, segredo e credenciais fora do código
-(variáveis de ambiente), limite de requisições por cliente, HTTPS no serviço publicado e
-comunicação interna apenas na rede privada do Docker.
+**Segurança (art. 46):** rotas protegidas por JWT, segredos fora do código (variáveis de ambiente), limite
+de requisições por cliente, HTTPS no serviço publicado e serviços internos, filas e banco acessíveis apenas
+pela rede privada do Docker. Os containers rodam com usuário sem privilégios.
 
-**Direitos do titular (art. 18):** como não há cadastro, o titular pode pedir a exclusão de uma
-tarefa informando o id recebido; o responsável apaga a chave `resultado:<id>` do Redis.
+**Direitos do titular (art. 18):** como não há cadastro, o titular pode pedir a exclusão de uma tarefa
+informando o id recebido; o responsável apaga a chave `resultado:<id>` do Redis (que de todo modo expira
+sozinha). Documentos indexados podem ser removidos apagando o volume `indice-vetorial`.
