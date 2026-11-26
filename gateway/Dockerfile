@@ -8,7 +8,11 @@ COPY gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY comum ./comum
+COPY proto ./proto
 COPY gateway/app.py gateway/metricas.html ./
+
+# Stubs do cliente gRPC (contrato em proto/inferencia.proto).
+RUN python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/inferencia.proto
 
 RUN useradd --create-home appuser
 USER appuser

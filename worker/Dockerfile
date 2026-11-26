@@ -8,10 +8,10 @@ COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY comum ./comum
-COPY worker/modelo.py worker/worker.py ./
+COPY worker/worker.py ./
 
 # Treina o modelo no build: o container sobe pronto e todas as replicas usam o mesmo.
-RUN python modelo.py
+RUN python -m comum.modelo
 
 RUN useradd --create-home appuser
 USER appuser
