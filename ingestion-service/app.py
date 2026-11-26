@@ -4,37 +4,37 @@ indice vetorial ao servico de recuperacao.
 
 POST /indexar NAO vetoriza na hora: publica na fila "indexacao" (RabbitMQ) e
 responde 202. O worker (worker_indexacao.py) consome, gera os embeddings e
-grava o indice no volume. GET /indice le o arquivo gravado pelo worker.
+grava o indice (volume ou Redis). GET /indice le o indice gravado pelo worker.
 
 Rodar: uvicorn app:app --port 8002
 """
-import os
 import uuid
 from threading import Lock
 from typing import Annotated
 
 from fastapi import Body, FastAPI, HTTPException
 from opentelemetry import trace
+from redis.exceptions import RedisError
 
 import fila
 import indice as armazenamento
 from comum import telemetria
+from comum.logs import registrar_requisicoes
 from modelos import Documento
 
 app = FastAPI(title="Ingestao - C3.A2")
 tracer = telemetria.configurar("ingestao", app)
+registrar_requisicoes(app, "ingestao")
 
-# Cache do indice em memoria, recarregado quando o worker regrava o arquivo.
+# Cache do indice em memoria, recarregado quando o worker regrava o indice.
 _cache = {"assinatura": None, "itens": []}
 _lock = Lock()
 
 
 def indice_atual():
-    try:
-        estado = os.stat(armazenamento.ARQUIVO)
-    except FileNotFoundError:
+    assinatura = armazenamento.assinatura()
+    if assinatura is None:
         return []
-    assinatura = (estado.st_mtime_ns, estado.st_size)
     with _lock:
         if _cache["assinatura"] != assinatura:
             _cache["itens"] = armazenamento.carregar()
@@ -68,8 +68,8 @@ def indice():
     """Consumido pelo servico de recuperacao."""
     try:
         itens = indice_atual()
-    except (OSError, ValueError):
-        raise HTTPException(status_code=503, detail="Indice ilegivel no disco.") from None
+    except (OSError, ValueError, RedisError):
+        raise HTTPException(status_code=503, detail="Indice ilegivel.") from None
     return {"total": len(itens), "itens": itens}
 
 
@@ -77,6 +77,6 @@ def indice():
 def saude():
     try:
         documentos = len(indice_atual())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RedisError):
         documentos = None
     return {"status": "ok", "documentos": documentos}

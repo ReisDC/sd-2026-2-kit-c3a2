@@ -10,12 +10,25 @@ O contexto de trace vai nos headers AMQP da mensagem.
 import json
 import os
 import time
+from urllib.parse import quote
 
 import pika
 
 from comum import telemetria
 
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/%2F")
+
+def _url_broker() -> str:
+    """RABBITMQ_URL completa, ou montada a partir de RABBITMQ_HOSTPORT e das
+    mesmas credenciais do broker (RABBITMQ_DEFAULT_USER/PASS) - formato do Render."""
+    if os.getenv("RABBITMQ_URL"):
+        return os.environ["RABBITMQ_URL"]
+    usuario = quote(os.getenv("RABBITMQ_DEFAULT_USER", "guest"), safe="")
+    senha = quote(os.getenv("RABBITMQ_DEFAULT_PASS", "guest"), safe="")
+    hostport = os.getenv("RABBITMQ_HOSTPORT", "localhost:5672")
+    return f"amqp://{usuario}:{senha}@{hostport}/%2F"
+
+
+RABBITMQ_URL = _url_broker()
 FILA_INDEXACAO = "indexacao"
 FILA_FALHAS = "indexacao.falhas"
 # pika repassa erros de socket (ex.: DNS do broker) sem embrulhar em AMQPError.

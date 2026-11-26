@@ -13,12 +13,15 @@ from pydantic import BaseModel, Field
 from sklearn.metrics.pairwise import cosine_similarity
 
 from comum import telemetria
+from comum.config import url_servico
 from comum.embeddings import Vetorizador
+from comum.logs import registrar_requisicoes
 
 app = FastAPI(title="Recuperacao - C3.A2")
 tracer = telemetria.configurar("recuperacao", app)
+registrar_requisicoes(app, "recuperacao")
 
-URL_INGESTAO = os.getenv("URL_INGESTAO", "http://localhost:8002").rstrip("/")
+URL_INGESTAO = url_servico("URL_INGESTAO", "http://localhost:8002")
 TIMEOUT_INGESTAO = float(os.getenv("TIMEOUT_INGESTAO", "10"))
 
 
