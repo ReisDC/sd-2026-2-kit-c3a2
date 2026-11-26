@@ -16,16 +16,23 @@ Cada parte da plataforma escolhe de um jeito:
 - **Geração (RAG):** se o LLM falhar, a geração responde com os trechos recuperados (degradação elegante).
   Prefere **A** a uma resposta completa.
 
-Não há réplicas: Redis, RabbitMQ, o volume do índice e o Jaeger são pontos únicos de falha. Replicá-los
+- **Via gRPC (síncrona):** o `/predict-sync` não passa pela fila. Se o servidor gRPC cair, a rota responde
+  503 na hora (circuit breaker), enquanto a via assíncrona continua aceitando tarefas.
+
+Não há réplicas: Redis, RabbitMQ, o armazenamento do índice e o Jaeger são pontos únicos de falha. Replicá-los
 (Redis Sentinel, cluster do RabbitMQ, banco vetorial distribuído) traria disponibilidade, mas custaria
 mais memória e máquinas do que o free tier oferece.
 
 ## Custo
 
-- **Uma VM gratuita** (Oracle Always Free, ou e2-micro/t3.micro com swap) roda os 10 containers. O custo
-  é zero, mas o sistema todo depende de uma única máquina.
-- PaaS gratuitos (Render, Railway) seriam mais simples, mas não rodam workers nem brokers de graça. Para
-  manter fila, worker e armazenamento vetorial, escolhemos a VM.
+- **PaaS (Railway ou Render)** recebe o mesmo código e os mesmos Dockerfiles, com HTTPS e rede privada
+  gerenciados. O custo cresce com o número de serviços: no Railway, os 11 processos consomem o crédito do
+  trial e depois o plano Hobby; no Render, só o gateway e o Redis são gratuitos, e cada serviço privado ou
+  worker vai para o plano pago. A alternativa seria juntar serviços (ex.: rodar o worker dentro da API),
+  mais barata, mas perderíamos o escalonamento e o isolamento de falhas independentes.
+- **Plano gratuito tem limites:** no Render, o gateway gratuito hiberna após 15 minutos (a primeira
+  requisição leva até ~1 min) e o Redis gratuito não persiste, então o índice vetorial precisa ser refeito
+  após um reinício.
 - **Microsserviços custam memória:** cada serviço Python ocupa cerca de 60–120 MB, e o RabbitMQ sozinho
   ~150 MB. Um monólito gastaria menos, mas perderia o escalonamento independente (ex.: `--scale worker=3`
   sem duplicar o gateway) e o isolamento de falhas.
@@ -39,6 +46,10 @@ mais memória e máquinas do que o free tier oferece.
 
 - **Gateway:** cada salto HTTP interno soma ~1–5 ms na rede do Docker. O rate limit e a validação do JWT
   custam microssegundos.
+- **Inferência síncrona (gRPC) x assíncrona (fila):** o `/predict-sync` devolve a classificação numa única
+  ida e volta (poucos ms: HTTP até o gateway, gRPC/HTTP2 com protobuf até a inferência). É o caminho mais
+  rápido para textos isolados, mas a carga cai direto no servidor gRPC. O `/predict-lote` amortiza o custo
+  da chamada entre até 100 textos.
 - **Inferência assíncrona:** o `POST /predict` volta em poucos milissegundos porque só enfileira. A
   latência real (fila + modelo, ~1–10 ms por texto) aparece no tempo até o resultado ficar `pronto`, e o
   cliente precisa consultar de novo. Trocamos a latência percebida pelo cliente por vazão e isolamento:
