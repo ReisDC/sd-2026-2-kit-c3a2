@@ -12,10 +12,12 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import jwt
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from circuit_breaker import CircuitBreaker, CircuitoAberto
@@ -43,6 +45,7 @@ disjuntor = CircuitBreaker(
 
 # Armazena timestamps das requisicoes por chave de cliente (em memoria)
 historico_requisicoes: dict[str, list[float]] = defaultdict(list)
+metricas = {"total": 0, "erros": 0, "tempo_total_ms": 0.0}
 
 
 class Entrada(BaseModel):
@@ -119,9 +122,13 @@ def post_com_retentativa(url: str, payload: dict) -> requests.Response:
 
 @app.middleware("http")
 async def registrar(request: Request, call_next):
-    inicio = time.time()
+    inicio = time.perf_counter()
     resposta = await call_next(request)
-    ms = (time.time() - inicio) * 1000
+    ms = (time.perf_counter() - inicio) * 1000
+    if request.url.path not in {"/metricas", "/metricas/dados"}:
+        metricas["total"] += 1
+        metricas["erros"] += int(resposta.status_code >= 400)
+        metricas["tempo_total_ms"] += ms
     print(f"[gateway] {request.method} {request.url.path} "
           f"-> {resposta.status_code} ({ms:.1f}ms)")
     return resposta
@@ -130,6 +137,22 @@ async def registrar(request: Request, call_next):
 @app.get("/saude")
 def saude():
     return {"status": "ok"}
+
+
+@app.get("/metricas", response_class=HTMLResponse)
+def painel_metricas():
+    return Path(__file__).with_name("metricas.html").read_text(encoding="utf-8")
+
+
+@app.get("/metricas/dados")
+async def dados_metricas(request: Request, usuario: dict = Depends(exigir_jwt)):
+    verificar_rate_limit(request, usuario)
+    total = metricas["total"]
+    return {
+        "total": total,
+        "erros": metricas["erros"],
+        "tempo_medio_ms": round(metricas["tempo_total_ms"] / total, 2) if total else 0,
+    }
 
 
 @app.post("/login")

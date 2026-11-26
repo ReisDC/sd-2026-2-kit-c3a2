@@ -40,7 +40,8 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [ ] Componente serverless ou na borda
 - [X] CI/CD publicando automaticamente a cada commit
       Imagem do gateway no GHCR a cada push na main: `.github/workflows/publicar-gateway.yml`.
-- [ ] Painel de metricas
+- [X] Painel de metricas
+      `/metricas`: total de requisicoes, erros e tempo medio; dados protegidos por JWT.
 - [ ] Manifests de Kubernetes
 
 ## Antes de entregar

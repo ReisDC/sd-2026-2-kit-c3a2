@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<title>Métricas do gateway</title>
+<h1>Métricas do gateway</h1>
+<form method="post">
+  <input name="usuario" placeholder="Usuário" autocomplete="username" required>
+  <input name="senha" type="password" placeholder="Senha" autocomplete="current-password" required>
+  <button>Entrar</button>
+</form>
+<button id="atualizar" type="button">Atualizar</button>
+<pre>Entre para visualizar.</pre>
+<p>Requisições concluídas neste processo. Os dados zeram ao reiniciar.</p>
+<script>
+const formulario = document.querySelector("form"), saida = document.querySelector("pre");
+let token = "";
+async function atualizar() {
+  const resposta = await fetch("/metricas/dados", {headers: {Authorization: "Bearer " + token}});
+  if (!resposta.ok) throw new Error("Consulta recusada (" + resposta.status + "). Faça login ou aguarde o limite por minuto.");
+  const dados = await resposta.json();
+  saida.textContent = `Requisições: ${dados.total}\nErros (4xx/5xx): ${dados.erros}\nTempo médio: ${dados.tempo_medio_ms} ms`;
+}
+formulario.onsubmit = async evento => {
+  evento.preventDefault();
+  try {
+    const resposta = await fetch("/login", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({usuario: formulario.usuario.value, senha: formulario.senha.value})});
+    if (!resposta.ok) throw new Error("Login inválido.");
+    token = (await resposta.json()).access_token;
+    formulario.senha.value = "";
+    await atualizar();
+  } catch (erro) { saida.textContent = erro.message; }
+};
+document.querySelector("#atualizar").onclick = () => atualizar().catch(erro => { saida.textContent = erro.message; });
+</script>
+</html>

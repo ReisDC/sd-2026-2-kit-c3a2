@@ -96,6 +96,10 @@ Relatório de CAP, custo e latência: [RELATORIO_TRADEOFFS.md](RELATORIO_TRADEOF
 O workflow `publicar-gateway.yml` publica a imagem do gateway no GHCR a cada push
 na `main`. Ele publica o container; o deploy da aplicação continua pendente.
 
+Painel simples: abra `http://localhost:8000/metricas` e entre com o usuário e senha
+do gateway. Exibe total de requisições concluídas, erros (4xx/5xx) e tempo médio;
+as consultas do painel não entram na contagem e os dados zeram ao reiniciar.
+
 ---
 
 ## Aulas de referência
