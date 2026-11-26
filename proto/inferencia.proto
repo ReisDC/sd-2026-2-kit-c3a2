@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package inferencia;
+
+// Contrato gRPC do servico de inferencia (via sincrona, sem fila).
+// Os stubs Python sao gerados no build das imagens:
+//   python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/inferencia.proto
+
+service Inferencia {
+  // Classifica um texto.
+  rpc Prever (PedidoPrever) returns (RespostaPrever);
+
+  // Classifica varios textos numa unica chamada.
+  rpc PreverLote (PedidoLote) returns (RespostaLote);
+}
+
+message PedidoPrever {
+  string texto = 1;
+}
+
+message RespostaPrever {
+  string texto = 1;
+  string sentimento = 2;
+  double confianca = 3;
+}
+
+message PedidoLote {
+  repeated string textos = 1;
+}
+
+message RespostaLote {
+  repeated RespostaPrever resultados = 1;
+}

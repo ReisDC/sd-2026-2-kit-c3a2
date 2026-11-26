@@ -1,5 +1,6 @@
 """
-Modelo de IA da disciplina, usado so pelo worker.
+Modelo de IA da disciplina, compartilhado pelo worker (via fila) e pelo
+servidor gRPC (via sincrona): mesmo modelo, mesmo resultado.
 
 Classificador de sentimento (positivo/negativo) em portugues.
 Treina localmente na primeira execucao e salva em disco (modelo.joblib).

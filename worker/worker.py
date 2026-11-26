@@ -18,7 +18,7 @@ from opentelemetry import trace
 
 from comum import fila_tarefas as fila
 from comum import telemetria
-from modelo import carregar_modelo
+from comum.modelo import carregar_modelo
 
 MAX_TENTATIVAS = int(os.getenv("WORKER_MAX_TENTATIVAS", "3"))
 
