@@ -2,7 +2,8 @@
 API Gateway - porta de entrada unica da plataforma.
 
 Rotas publicas:   GET /saude, POST /login, GET /metricas (pagina do painel)
-Rotas com JWT:    POST /predict, GET /resultado/{id}      -> inferencia (fila + worker)
+Rotas com JWT:    POST /predict, GET /resultado/{id}      -> inferencia (REST + fila + worker)
+                  POST /predict-sync, POST /predict-lote  -> inferencia (gRPC, sincrono)
                   POST /documentos, POST /buscar,
                   POST /perguntar                         -> RAG (ingestao/recuperacao/geracao)
                   GET  /metricas/dados
@@ -21,14 +22,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
+import grpc
 import jwt
 import requests
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
 from pydantic import BaseModel, Field
 
+import inferencia_pb2
+import inferencia_pb2_grpc
 from comum import telemetria
 from comum.circuit_breaker import CircuitBreaker, CircuitoAberto
+from comum.config import url_servico
 
 
 def _obrigatoria(nome: str) -> str:
@@ -47,10 +53,10 @@ SENHA = _obrigatoria("GATEWAY_SENHA")
 RATE_LIMIT_POR_MINUTO = int(os.getenv("RATE_LIMIT_POR_MINUTO", "30"))
 
 SERVICOS = {
-    "inferencia": os.getenv("URL_INFERENCIA", "http://localhost:8001"),
-    "ingestao": os.getenv("URL_INGESTAO", "http://localhost:8002"),
-    "recuperacao": os.getenv("URL_RECUPERACAO", "http://localhost:8003"),
-    "geracao": os.getenv("URL_GERACAO", "http://localhost:8004"),
+    "inferencia": url_servico("URL_INFERENCIA", "http://localhost:8001"),
+    "ingestao": url_servico("URL_INGESTAO", "http://localhost:8002"),
+    "recuperacao": url_servico("URL_RECUPERACAO", "http://localhost:8003"),
+    "geracao": url_servico("URL_GERACAO", "http://localhost:8004"),
 }
 TIMEOUT_PADRAO = float(os.getenv("TIMEOUT_SERVICOS", "5"))
 # A geracao espera a recuperacao e o LLM: precisa de mais folga.
@@ -59,16 +65,27 @@ TENTATIVAS = int(os.getenv("TENTATIVAS_SERVICOS", "3"))
 ESPERA_BASE_SEGUNDOS = float(os.getenv("ESPERA_BASE_SEGUNDOS", "0.5"))
 STATUS_TRANSITORIOS = {502, 503, 504}
 
+# Endereco gRPC da inferencia sincrona, no formato host:porta.
+GRPC_INFERENCIA = os.getenv("GRPC_INFERENCIA", "localhost:50051")
+CODIGOS_GRPC_TRANSITORIOS = {
+    grpc.StatusCode.UNAVAILABLE,
+    grpc.StatusCode.DEADLINE_EXCEEDED,
+    grpc.StatusCode.RESOURCE_EXHAUSTED,
+}
+
 disjuntores = {
     nome: CircuitBreaker(
         limite_falhas=int(os.getenv("CB_LIMITE_FALHAS", "5")),
         espera_segundos=float(os.getenv("CB_ESPERA_SEGUNDOS", "30")),
     )
-    for nome in SERVICOS
+    for nome in [*SERVICOS, "inferencia-grpc"]
 }
 
 app = FastAPI(title="Gateway - C3.A2")
 telemetria.configurar("gateway", app)
+# Instrumentar ANTES de abrir o canal, para propagar o trace nas chamadas gRPC.
+GrpcInstrumentorClient().instrument()
+stub_inferencia = inferencia_pb2_grpc.InferenciaStub(grpc.insecure_channel(GRPC_INFERENCIA))
 
 # Horarios das requisicoes por cliente (em memoria, so os ultimos 60 s).
 historico_requisicoes: dict[str, list[float]] = defaultdict(list)
@@ -77,6 +94,13 @@ metricas = {"total": 0, "erros": 0, "tempo_total_ms": 0.0}
 
 class Entrada(BaseModel):
     texto: str = Field(min_length=1, max_length=5000)
+
+
+TextoValido = Annotated[str, Field(min_length=1, max_length=5000)]
+
+
+class Lote(BaseModel):
+    textos: list[TextoValido] = Field(min_length=1, max_length=100)
 
 
 class Documento(BaseModel):
@@ -163,7 +187,7 @@ def requisitar_com_retentativa(metodo: str, url: str, timeout: float,
 
 def encaminhar(servico: str, metodo: str, caminho: str, payload=None) -> JSONResponse:
     """Chama um servico interno protegido pelo circuit breaker dele."""
-    url = f"{SERVICOS[servico].rstrip('/')}{caminho}"
+    url = f"{SERVICOS[servico]}{caminho}"
     timeout = TIMEOUTS.get(servico, TIMEOUT_PADRAO)
     try:
         r = disjuntores[servico].chamar(
@@ -186,6 +210,49 @@ def encaminhar(servico: str, metodo: str, caminho: str, payload=None) -> JSONRes
     except ValueError:
         corpo = {"detail": r.text}
     return JSONResponse(status_code=r.status_code, content=corpo)
+
+
+def grpc_com_retentativa(metodo, pedido):
+    """Mesma politica do REST: repete so falhas transitorias, com espera progressiva.
+    Erros do cliente (ex.: INVALID_ARGUMENT) sao devolvidos, nao levantados, para
+    nao contarem como falha do servico no circuit breaker."""
+    for tentativa in range(TENTATIVAS):
+        try:
+            return metodo(pedido, timeout=TIMEOUT_PADRAO)
+        except grpc.RpcError as erro:
+            if erro.code() not in CODIGOS_GRPC_TRANSITORIOS:
+                return erro
+            if tentativa == TENTATIVAS - 1:
+                raise
+            time.sleep(ESPERA_BASE_SEGUNDOS * 2 ** tentativa)
+
+
+def chamar_grpc(nome_metodo: str, pedido):
+    """Chama a inferencia por gRPC protegida pelo circuit breaker dela."""
+    disjuntor = disjuntores["inferencia-grpc"]
+    try:
+        resposta = disjuntor.chamar(
+            grpc_com_retentativa, getattr(stub_inferencia, nome_metodo), pedido
+        )
+    except CircuitoAberto as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"inferencia-grpc indisponivel: {e}",
+            headers={"Retry-After": str(int(disjuntor.espera_segundos))},
+        ) from None
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            raise HTTPException(status_code=504,
+                                detail="inferencia-grpc: tempo-limite excedido") from None
+        raise HTTPException(status_code=503, detail="inferencia-grpc indisponivel") from None
+    if isinstance(resposta, grpc.RpcError):
+        status = 400 if resposta.code() == grpc.StatusCode.INVALID_ARGUMENT else 502
+        raise HTTPException(status_code=status, detail=resposta.details())
+    return resposta
+
+
+def _sentimento(r) -> dict:
+    return {"sentimento": r.sentimento, "confianca": round(r.confianca, 4)}
 
 
 # -------------------------------------------------------------------- rotas
@@ -225,6 +292,20 @@ def login(credenciais: CredenciaisLogin):
 def predict(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
     """Enfileira a classificacao de sentimento; consulte em /resultado/{id}."""
     return encaminhar("inferencia", "POST", "/predict", entrada.model_dump())
+
+
+@app.post("/predict-sync")
+def predict_sync(entrada: Entrada, _: dict = Depends(cliente_autorizado)):
+    """Classificacao sincrona via gRPC (Prever): mesmo modelo do worker."""
+    r = chamar_grpc("Prever", inferencia_pb2.PedidoPrever(texto=entrada.texto))
+    return _sentimento(r)
+
+
+@app.post("/predict-lote")
+def predict_lote(lote: Lote, _: dict = Depends(cliente_autorizado)):
+    """Classifica varios textos numa unica chamada gRPC (PreverLote)."""
+    r = chamar_grpc("PreverLote", inferencia_pb2.PedidoLote(textos=lote.textos))
+    return {"resultados": [_sentimento(item) for item in r.resultados]}
 
 
 @app.get("/resultado/{tarefa_id}")
