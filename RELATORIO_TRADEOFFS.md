@@ -30,6 +30,15 @@ mais memória e máquinas do que o free tier oferece.
   trial e depois o plano Hobby; no Render, só o gateway e o Redis são gratuitos, e cada serviço privado ou
   worker vai para o plano pago. A alternativa seria juntar serviços (ex.: rodar o worker dentro da API),
   mais barata, mas perderíamos o escalonamento e o isolamento de falhas independentes.
+- **Perfil Free (o publicado):** o plano Free do Railway permite só 3 serviços por projeto e 0,5 GB de
+  RAM por serviço. Por isso a produção roda dois serviços: o Redis e um container com todos os serviços
+  (`Dockerfile` da raiz). O código e os protocolos são os mesmos (HTTP, gRPC e filas, via `127.0.0.1`),
+  e o consumo fica em ~120 MB. Perdemos o isolamento de falhas e o escalonamento independente em
+  produção: se o processo cai, cai tudo junto, e escalar o worker significa escalar a plataforma inteira.
+  O RabbitMQ dá lugar a uma fila no Redis (sem confirmação de publicação nem dead letter nativa, mas com
+  fila de falhas própria), e o Jaeger dá lugar ao tracing gerenciado do Railway. O compose continua com
+  os microsserviços separados, e o perfil `completo` do `.railway/railway.ts` volta a separá-los num
+  plano pago.
 - **Plano gratuito tem limites:** no Render, o gateway gratuito hiberna após 15 minutos (a primeira
   requisição leva até ~1 min) e o Redis gratuito não persiste, então o índice vetorial precisa ser refeito
   após um reinício.

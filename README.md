@@ -189,13 +189,19 @@ não tem segredos fixos: sem `JWT_SEGREDO` ou `GATEWAY_SENHA`, o gateway nem sob
 
 ### Deploy e HTTPS
 
-Veja [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md). Há duas opções com os mesmos Dockerfiles:
+Veja [deploy/INSTRUCOES.md](deploy/INSTRUCOES.md).
 
-- **Railway** (recomendada): infraestrutura como código em [.railway/railway.ts](.railway/railway.ts)
-  (`railway config apply` cria os 11 serviços, o Redis e o RabbitMQ).
-- **Render**: Blueprint em [render.yaml](render.yaml).
+- **Railway** (recomendada): infraestrutura como código em [.railway/railway.ts](.railway/railway.ts), com
+  dois perfis:
+  - **`free`** (o publicado): cabe no plano Free (até 3 serviços). Sobe o Redis e o serviço `plataforma`,
+    feito com o [Dockerfile](Dockerfile) da raiz e o [plataforma.py](plataforma.py): os mesmos serviços num
+    único container. Só o gateway escuta para fora; os demais ficam em `127.0.0.1` e continuam conversando
+    por HTTP, gRPC e filas. A fila de indexação usa o Redis no lugar do RabbitMQ, e os traces vão para a
+    aba *Traces* do Railway (~120 MB de RAM).
+  - **`completo`**: os 11 serviços separados, igual ao compose (exige plano pago).
+- **Render**: Blueprint em [render.yaml](render.yaml), com um container por serviço.
 
-Nas duas, só o gateway recebe domínio público, com **HTTPS automático**; o resto fica na rede privada.
+Em todos os casos, só o gateway recebe domínio público, com **HTTPS automático**.
 
 ### CI/CD
 
@@ -216,7 +222,10 @@ O workflow [.github/workflows/publicar-imagens.yml](.github/workflows/publicar-i
 ├── retrieval-service/       # busca vetorial
 ├── generation-service/      # geração (RAG) + cliente de LLM
 ├── comum/                   # telemetria, logs, circuit breaker, embeddings, modelo, fila Redis
-├── .railway/railway.ts      # infraestrutura como código do Railway
+├── Dockerfile               # imagem única com todos os serviços (deploy no Railway Free)
+├── plataforma.py            # inicia todos os serviços num processo (usado pelo Dockerfile)
+├── requirements.txt         # dependências da imagem única
+├── .railway/railway.ts      # infraestrutura como código do Railway (perfis free e completo)
 ├── deploy/                  # instruções de deploy
 ├── docker-compose.yml       # sistema inteiro com um comando
 ├── render.yaml              # Blueprint do Render
@@ -240,7 +249,7 @@ Relatório de CAP, custo e latência: [RELATORIO_TRADEOFFS.md](RELATORIO_TRADEOF
 | Texto enviado ao gRPC | `POST /predict-sync`, `POST /predict-lote` | Classificar na hora | Não é armazenado: só fica na memória durante a chamada |
 | Documentos indexados (texto e origem) | `POST /documentos`, RabbitMQ e índice vetorial | Formar a base consultada pelo RAG | **Persistem** até serem removidos pelo responsável (volume `indice-vetorial` localmente; chave `indice:vetorial` no Redis na nuvem). Não envie documentos com dados pessoais |
 | Perguntas ao RAG | `POST /buscar`, `POST /perguntar` | Recuperar trechos e gerar a resposta | Não são armazenadas. **Com `LLM_API_KEY` definida, a pergunta e os trechos são enviados ao provedor do LLM** (operador terceiro); no modo simulado nada sai do servidor |
-| Traces (Jaeger) | Spans de todos os serviços | Diagnóstico de latência e falhas | Só em memória do Jaeger (perdidos ao reiniciar). Guardam rota, status, tempos, ids de tarefa e tamanhos; nunca o texto, a senha ou o token |
+| Traces (Jaeger; no Railway, a aba *Traces*) | Spans de todos os serviços | Diagnóstico de latência e falhas | Localmente, só em memória do Jaeger (perdidos ao reiniciar); no Railway, pelo prazo de retenção da plataforma. Guardam rota, status, tempos, ids de tarefa e tamanhos; nunca o texto, a senha ou o token |
 | Logs | Saída dos containers | Diagnóstico | Registram só método, rota, status, tempo, id da tarefa e tamanho da entrada. O log de acesso do uvicorn está desligado porque gravaria o IP |
 
 **Base legal:** execução do serviço solicitado pelo próprio titular (art. 7º, V). Nenhum dado é usado para
