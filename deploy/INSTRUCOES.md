@@ -1,6 +1,6 @@
 # Deploy em nuvem (free tier) com HTTPS
 
-A plataforma tem 11 processos: gateway, inferência REST, inferência gRPC, worker, ingestão,
+A plataforma tem 11 processos no ambiente local: gateway, inferência REST, inferência gRPC, worker, ingestão,
 worker de indexação, recuperação, geração, Redis, RabbitMQ e Jaeger. As duas opções abaixo
 publicam o **mesmo código e os mesmos Dockerfiles** do `docker-compose.yml`. Só o gateway recebe
 domínio público, e o **HTTPS é automático** nas duas plataformas (certificado gerenciado por elas).
@@ -14,8 +14,8 @@ Diferenças em relação ao ambiente local:
 
 | | Opção B: Railway (recomendada) | Opção A: Render |
 |---|---|---|
-| Arquitetura completa | sim | sim |
-| Custo | crédito do período de teste (trial); depois, plano Hobby | gateway e Redis grátis; demais serviços no plano *starter* (pago) |
+| Arquitetura | perfil Free: 2 serviços (plataforma + Redis); perfil completo: os 11 | completa |
+| Custo | perfil Free: grátis (US$ 1/mês de crédito); perfil completo: plano Hobby | gateway e Redis grátis; demais serviços no plano *starter* (pago) |
 | HTTPS | `https://<nome>.up.railway.app` | `https://<nome>.onrender.com` |
 | Configuração | `.railway/railway.ts` (infraestrutura como código) | `render.yaml` (Blueprint) |
 
@@ -24,9 +24,24 @@ Diferenças em relação ao ambiente local:
 ## Opção B: Railway (recomendada), com infraestrutura como código
 
 Toda a infraestrutura do Railway está descrita em [.railway/railway.ts](../.railway/railway.ts), no
-formato de [infraestrutura como código](https://docs.railway.com/infrastructure-as-code) do Railway: os
-11 serviços, o Redis, o volume do RabbitMQ, o Dockerfile e o comando de cada serviço, healthchecks e as
-variáveis que ligam um serviço ao outro pela rede privada. Não é preciso criar serviço por serviço no painel.
+formato de [infraestrutura como código](https://docs.railway.com/infrastructure-as-code) do Railway.
+Não é preciso criar serviço por serviço no painel. O arquivo tem dois perfis (constante `PERFIL`):
+
+| Perfil | Plano | O que cria |
+|---|---|---|
+| `"free"` (padrão) | Free: até 3 serviços por projeto, 0,5 GB de RAM por serviço | `redis` + `plataforma` |
+| `"completo"` | Hobby ou superior | os 11 serviços separados, igual ao `docker-compose.yml` |
+
+**Perfil Free:** o serviço `plataforma` (o [Dockerfile](../Dockerfile) da raiz, com [plataforma.py](../plataforma.py)) roda num único container o mesmo
+código dos serviços:
+- o gateway fica público;
+- inferência, ingestão, recuperação e geração ficam num servidor HTTP em `127.0.0.1`;
+- o gRPC fica em `127.0.0.1:50051`;
+- os dois workers rodam em threads.
+
+As chamadas entre eles continuam sendo HTTP, gRPC e filas, só que dentro do container. O RabbitMQ dá lugar
+a uma fila no Redis, que também guarda o índice vetorial. O Jaeger dá lugar ao **tracing nativo do
+Railway** (aba *Traces*), que recebe os spans do OpenTelemetry. O container usa cerca de 120 MB de RAM.
 
 > O formato antigo (`railway.json` por serviço) foi descontinuado pelo Railway e não é mais aplicado
 > em serviços novos. Por isso o build caía no Railpack ("could not determine how to build the app").
@@ -34,7 +49,7 @@ variáveis que ligam um serviço ao outro pela rede privada. Não é preciso cri
 ### 1. Pré-requisitos
 
 - Conta no railway.app conectada ao GitHub, com acesso a este repositório.
-- [Railway CLI](https://docs.railway.com/cli) 5.42.1 ou mais nova (`railway --version`) e Node.js 22+.
+- [Railway CLI](https://docs.railway.com/cli) 5.63 ou mais nova (`railway --version`) e Node.js 22+.
 - Na raiz do repositório: `npm install` (instala o pacote `railway`, que o `railway.ts` importa).
 
 ### 2. Criar o projeto e aplicar
@@ -43,44 +58,47 @@ variáveis que ligam um serviço ao outro pela rede privada. Não é preciso cri
 railway login
 railway init                 # cria um projeto vazio (ou: railway link, para um projeto existente)
 railway config plan          # mostra o que será criado; não altera nada
-railway config apply         # cria serviços, Redis, volume e variáveis
+railway config apply         # cria os serviços e as variáveis
 ```
 
-Se você já tinha criado serviços manualmente com os mesmos nomes, apague-os antes ou rode
-`railway config pull` para comparar. Um serviço não pode ser gerenciado ao mesmo tempo pelo IaC e pelo painel.
+O `apply` remove serviços do projeto que não estejam no `railway.ts` (o plano marca como destrutivo).
+No plano Free isso é necessário para caber no limite de 3 serviços. Se um `apply` anterior falhou, descarte
+as mudanças pendentes no painel (aviso de *staged changes* → *Discard*) antes de aplicar de novo.
 
 ### 3. Segredos (uma vez)
 
-Os segredos não ficam no repositório. No `railway.ts` eles estão marcados com `preserve()`, então o
-`apply` mantém o valor definido no painel. Depois do primeiro `apply`, defina em *Variables*:
+Depois do primeiro `apply`, defina em *Variables* do serviço `plataforma` (perfil Free):
 
-| Serviço | Variável | Valor |
-|---|---|---|
-| `gateway` | `JWT_SEGREDO` | `openssl rand -hex 32` |
-| `gateway` | `GATEWAY_SENHA` | senha forte do login |
-| `rabbitmq` | `RABBITMQ_DEFAULT_PASS` | só letras e números (vai dentro de uma URL) |
-| `geracao` | `LLM_API_KEY` | opcional; vazio = modo simulado |
+| Variável | Valor |
+|---|---|
+| `JWT_SEGREDO` | `openssl rand -hex 32` |
+| `GATEWAY_SENHA` | senha forte do login |
+| `LLM_API_KEY` | opcional; vazio = modo simulado |
 
-Em seguida faça *Redeploy* do `gateway`, do `rabbitmq`, da `ingestao` e do `worker-indexacao`.
+Em seguida faça *Redeploy* do `plataforma`. No perfil completo, os mesmos segredos ficam no `gateway`
+(e na `geracao`), e `RABBITMQ_DEFAULT_PASS` fica no `rabbitmq`, com só letras e números porque vai dentro
+de uma URL. Depois faça *Redeploy* do `gateway`, do `rabbitmq`, da `ingestao` e do `worker-indexacao`.
 
 ### 4. Domínio público com HTTPS
 
-No serviço `gateway`, abra *Settings → Networking → Generate Domain* e informe a porta **8000**. O
-Railway entrega `https://<nome>.up.railway.app` com certificado válido. Os domínios gerados pelo Railway
-não ficam no `railway.ts`, por isso esse passo é manual. **Só o gateway** recebe domínio.
+No serviço público (`plataforma` no perfil Free, `gateway` no completo), abra *Settings → Networking →
+Generate Domain*. O Railway entrega `https://<nome>.up.railway.app` com certificado válido. Os domínios
+gerados pelo Railway não ficam no `railway.ts`, por isso esse passo é manual. No perfil completo, informe
+a porta **8000**; no Free, o container escuta na porta `PORT` que o Railway fornece.
 
 ### 5. Ver os traces
 
-O Jaeger não tem autenticação. Para capturar evidências, gere um domínio temporário para o serviço
-`jaeger` na porta **16686**, consulte os traces e remova o domínio em seguida.
+- **Perfil Free:** aba *Traces* do projeto. O `tracing: { enabled: true }` já está no `railway.ts`.
+- **Perfil completo:** Jaeger. Ele não tem autenticação, então gere um domínio temporário para o serviço
+  `jaeger` na porta **16686**, consulte os traces e remova o domínio em seguida.
 
 ### Observações
 
-- **Rede privada IPv6:** os serviços internos escutam em `::`; o gateway escuta em `0.0.0.0` para o proxy público.
-- **Índice vetorial no Redis:** o Railway não deixa montar o mesmo volume em dois serviços, então a
-  ingestão e o worker de indexação compartilham o índice pelo Redis (`INDICE_REDIS_URL`).
-- **Deploy contínuo:** cada serviço está ligado à branch `main` e só é refeito quando muda a pasta dele
-  ou `comum/` (`watchPatterns`).
+- **Plano Free:** o crédito é de US$ 1/mês, e o serviço hiberna após alguns minutos sem tráfego. A
+  primeira requisição depois disso acorda o container. Os workers esperam a fila sem acordar periodicamente
+  (`FILA_ESPERA_SEGUNDOS=0`), justamente para permitir a hibernação.
+- **Rede privada IPv6 (perfil completo):** os serviços internos escutam em `::`, e o gateway em `0.0.0.0`.
+- **Índice vetorial no Redis:** o Railway não deixa montar o mesmo volume em dois serviços.
 - **Mudanças na infraestrutura:** edite o `railway.ts` e rode `railway config plan` / `apply` de novo.
   O Railway não lê a pasta `.railway/` sozinho durante os deploys.
 

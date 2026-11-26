@@ -1,9 +1,18 @@
 /**
  * Infraestrutura como codigo no Railway (https://docs.railway.com/infrastructure-as-code).
  *
- * Descreve os 11 servicos da plataforma no mesmo projeto. Cada servico de aplicacao
- * e buildado a partir deste repositorio com o Dockerfile dele (contexto na raiz,
- * igual ao docker-compose). Aplicar:
+ * Dois perfis (troque a constante PERFIL abaixo):
+ *
+ *   "free"     - cabe no plano Free (ate 3 servicos, 0,5 GB de RAM por servico):
+ *                `redis` + `plataforma` (Dockerfile da raiz / plataforma.py:
+ *                gateway publico e os demais servicos no mesmo container,
+ *                conversando por HTTP/gRPC/filas em 127.0.0.1). Fila de
+ *                indexacao e indice vetorial no Redis.
+ *                Tracing pelo recurso nativo do Railway (sem Jaeger).
+ *   "completo" - os 11 servicos separados, igual ao docker-compose (plano pago).
+ *
+ * Cada servico e buildado a partir deste repositorio com o Dockerfile dele
+ * (contexto na raiz, igual ao docker-compose). Aplicar:
  *
  *   railway link            # escolhe o projeto e o ambiente
  *   railway config plan     # mostra o que sera criado/alterado
@@ -17,6 +26,8 @@
  */
 import { defineRailway, github, image, preserve, project, redis, service, volume } from "railway/iac";
 import type { VariableValue } from "railway/iac";
+
+const PERFIL: "free" | "completo" = "free";
 
 const REPOSITORIO = "ReisDC/sd-2026-2-kit-c3a2";
 const OTEL = { OTEL_EXPORTER_OTLP_ENDPOINT: "http://${{jaeger.RAILWAY_PRIVATE_DOMAIN}}:4318" };
@@ -48,7 +59,38 @@ function aplicacao(
   });
 }
 
-export default defineRailway(() => {
+/** Perfil Free: Redis + um container com todos os servicos (Dockerfile da raiz). */
+function perfilFree() {
+  const cache = redis("redis");
+  const plataforma = service("plataforma", {
+    source: github(REPOSITORIO, { branch: "main" }),
+    build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
+    deploy: {
+      startCommand: "python plataforma.py",
+      healthcheckPath: "/saude",
+      healthcheckTimeout: 120,
+      restartPolicyType: "ON_FAILURE",
+      restartPolicyMaxRetries: 10,
+    },
+    // Railway injeta OTEL_EXPORTER_OTLP_* e o SDK exporta para a aba Traces.
+    tracing: { enabled: true },
+    env: {
+      REDIS_URL: cache.env.REDIS_URL,
+      JWT_SEGREDO: preserve(),
+      GATEWAY_USUARIO: "admin",
+      GATEWAY_SENHA: preserve(),
+      RATE_LIMIT_POR_MINUTO: "30",
+      LLM_API_KEY: preserve(), // vazio = modo simulado
+      // O receptor do Railway aceita so traces.
+      OTEL_METRICS_EXPORTER: "none",
+      OTEL_LOGS_EXPORTER: "none",
+    },
+  });
+  return [cache, plataforma];
+}
+
+/** Perfil completo: os 11 servicos separados (exige plano pago). */
+function perfilCompleto() {
   // ------------------------------------------------------------ infraestrutura
   const cache = redis("redis");
   const dadosRabbit = volume("rabbitmq-dados");
@@ -139,12 +181,16 @@ export default defineRailway(() => {
     "/saude",
   );
 
-  return project("plataforma-ia-c3a2", {
-    resources: [
-      cache, dadosRabbit, rabbitmq, jaeger,
-      inferencia, inferenciaGrpc, worker,
-      ingestao, workerIndexacao, recuperacao, geracao,
-      gateway,
-    ],
-  });
-});
+  return [
+    cache, dadosRabbit, rabbitmq, jaeger,
+    inferencia, inferenciaGrpc, worker,
+    ingestao, workerIndexacao, recuperacao, geracao,
+    gateway,
+  ];
+}
+
+export default defineRailway(() =>
+  project("plataforma-ia-c3a2", {
+    resources: PERFIL === "free" ? perfilFree() : perfilCompleto(),
+  }),
+);
