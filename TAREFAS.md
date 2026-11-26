@@ -10,10 +10,10 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [X] **2. Rate limit no gateway** - `gateway/app.py`
       Limitar requisicoes por cliente por minuto. (Aula 8)
 
-- [ ] **3. Dockerfile de cada servico**
+- [X] **3. Dockerfile de cada servico**
       Um Dockerfile por servico. Use `Dockerfile.exemplo` como ponto de partida. (Aula 13)
 
-- [ ] **4. docker-compose completo**
+- [X] **4. docker-compose completo**
       O sistema inteiro deve subir com UM comando. (Aula 14)
 
 - [ ] **5. Deploy em nuvem (free tier)**
