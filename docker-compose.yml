@@ -1,56 +1,142 @@
+# Sobe a plataforma inteira com UM comando:   docker compose up --build
+# (antes, uma unica vez: cp .env.example .env)
+#
+# So o gateway (8000) e a interface do Jaeger (16686) ficam expostos no host;
+# todo o resto conversa apenas pela rede interna do Docker.
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
+x-rabbitmq: &rabbitmq
+  RABBITMQ_URL: amqp://${RABBITMQ_USUARIO:?defina no .env}:${RABBITMQ_SENHA:?defina no .env}@rabbitmq:5672/%2F
+
 services:
+  # ------------------------------------------------------------ porta de entrada
   gateway:
-    build:
-      context: ./gateway
-      dockerfile: Dockerfile
-    container_name: howard-gateway
-    ports:
-      - "8000:8000"
+    build: {context: ., dockerfile: gateway/Dockerfile}
+    image: plataforma-ia/gateway
+    ports: ["8000:8000"]
     environment:
-      INGESTION_URL: http://ingestion-service:8000
-      RETRIEVAL_URL: http://retrieval-service:8000
-      GENERATION_URL: http://generation-service:8000
+      <<: *otel
+      JWT_SEGREDO: ${JWT_SEGREDO:?defina JWT_SEGREDO no .env}
+      GATEWAY_USUARIO: ${GATEWAY_USUARIO:-admin}
+      GATEWAY_SENHA: ${GATEWAY_SENHA:?defina GATEWAY_SENHA no .env}
+      JWT_EXPIRACAO_MINUTOS: ${JWT_EXPIRACAO_MINUTOS:-60}
+      RATE_LIMIT_POR_MINUTO: ${RATE_LIMIT_POR_MINUTO:-30}
+      URL_INFERENCIA: http://inferencia:8001
+      URL_INGESTAO: http://ingestao:8002
+      URL_RECUPERACAO: http://recuperacao:8003
+      URL_GERACAO: http://geracao:8004
+      TIMEOUT_SERVICOS: ${TIMEOUT_SERVICOS:-5}
+      TIMEOUT_GERACAO: ${TIMEOUT_GERACAO:-30}
+      TENTATIVAS_SERVICOS: ${TENTATIVAS_SERVICOS:-3}
+      ESPERA_BASE_SEGUNDOS: ${ESPERA_BASE_SEGUNDOS:-0.5}
+      CB_LIMITE_FALHAS: ${CB_LIMITE_FALHAS:-5}
+      CB_ESPERA_SEGUNDOS: ${CB_ESPERA_SEGUNDOS:-30}
+    depends_on: [inferencia, ingestao, recuperacao, geracao]
+    restart: unless-stopped
+
+  # ------------------------------------------- inferencia: API + fila Redis + worker
+  inferencia:
+    build: {context: ., dockerfile: inferencia/Dockerfile}
+    image: plataforma-ia/inferencia
+    environment:
+      <<: *otel
+      REDIS_URL: redis://redis:6379/0
+      RESULTADO_TTL_SEGUNDOS: ${RESULTADO_TTL_SEGUNDOS:-86400}
     depends_on:
-      - ingestion-service
-      - retrieval-service
-      - generation-service
-    networks:
-      - howard-network
+      redis: {condition: service_healthy}
     restart: unless-stopped
 
-  ingestion-service:
-    build:
-      context: ./ingestion-service
-      dockerfile: Dockerfile
-    container_name: howard-ingestion
-    expose:
-      - "8000"
-    networks:
-      - howard-network
+  worker:
+    build: {context: ., dockerfile: worker/Dockerfile}
+    image: plataforma-ia/worker
+    environment:
+      <<: *otel
+      REDIS_URL: redis://redis:6379/0
+      RESULTADO_TTL_SEGUNDOS: ${RESULTADO_TTL_SEGUNDOS:-86400}
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    # Escale com: docker compose up -d --scale worker=3
+
+  redis:
+    image: docker.io/library/redis:7.4-alpine
+    # Sem persistencia em disco: tarefas e resultados sao temporarios (LGPD).
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
-  retrieval-service:
-    build:
-      context: ./retrieval-service
-      dockerfile: Dockerfile
-    container_name: howard-retrieval
-    expose:
-      - "8000"
-    networks:
-      - howard-network
+  # ------------------------------------ RAG: ingestao + armazenamento vetorial
+  ingestao:
+    build: {context: ., dockerfile: ingestion-service/Dockerfile}
+    image: plataforma-ia/ingestao
+    environment:
+      <<: [*otel, *rabbitmq]
+      INDICE_ARQUIVO: /dados/indice.json
+    volumes: [indice-vetorial:/dados]
+    depends_on:
+      rabbitmq: {condition: service_healthy}
     restart: unless-stopped
 
-  generation-service:
-    build:
-      context: ./generation-service
-      dockerfile: Dockerfile
-    container_name: howard-generation
-    expose:
-      - "8000"
-    networks:
-      - howard-network
+  worker-indexacao:
+    # Mesma imagem da ingestao (o build reaproveita o cache), outro processo.
+    build: {context: ., dockerfile: ingestion-service/Dockerfile}
+    image: plataforma-ia/ingestao
+    command: ["python", "worker_indexacao.py"]
+    environment:
+      <<: [*otel, *rabbitmq]
+      INDICE_ARQUIVO: /dados/indice.json
+    volumes: [indice-vetorial:/dados]
+    depends_on:
+      ingestao: {condition: service_started}
+      rabbitmq: {condition: service_healthy}
     restart: unless-stopped
 
-networks:
-  howard-network:
-    driver: bridge
+  recuperacao:
+    build: {context: ., dockerfile: retrieval-service/Dockerfile}
+    image: plataforma-ia/recuperacao
+    environment:
+      <<: *otel
+      URL_INGESTAO: http://ingestao:8002
+    depends_on: [ingestao]
+    restart: unless-stopped
+
+  geracao:
+    build: {context: ., dockerfile: generation-service/Dockerfile}
+    image: plataforma-ia/geracao
+    environment:
+      <<: *otel
+      URL_RECUPERACAO: http://recuperacao:8003
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_MODELO: ${LLM_MODELO:-gpt-4o-mini}
+    depends_on: [recuperacao]
+    restart: unless-stopped
+
+  rabbitmq:
+    image: docker.io/library/rabbitmq:3.13-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USUARIO:?defina no .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_SENHA:?defina no .env}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # ------------------------------------------------------ observabilidade
+  jaeger:
+    image: docker.io/jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]   # interface web dos traces
+    restart: unless-stopped
+
+volumes:
+  indice-vetorial:
