@@ -1,11 +1,14 @@
 """
-Mensageria com RabbitMQ - API de ingestao e worker.
+Fila de indexacao - API de ingestao e worker.
 
 Fluxo: POST /indexar publica os documentos na fila "indexacao"; o worker
 consome, vetoriza e grava o indice. Mensagens rejeitadas vao para a fila
 "indexacao.falhas" (dead letter) em vez de sumirem.
 
-O contexto de trace vai nos headers AMQP da mensagem.
+Broker: RabbitMQ (padrao, docker-compose). Com FILA_INDEXACAO_REDIS_URL, a fila
+passa a ser uma lista no Redis - usado no perfil enxuto do Railway (plano Free),
+que nao comporta um RabbitMQ. O contexto de trace vai nos headers AMQP ou,
+no Redis, junto da mensagem.
 """
 import json
 import os
@@ -13,8 +16,25 @@ import time
 from urllib.parse import quote
 
 import pika
+from redis.exceptions import RedisError
 
 from comum import telemetria
+
+FILA_REDIS_URL = os.getenv("FILA_INDEXACAO_REDIS_URL", "")
+_redis = None
+
+
+def usa_redis() -> bool:
+    return bool(FILA_REDIS_URL)
+
+
+def cliente_redis():
+    global _redis
+    if _redis is None:
+        import redis
+
+        _redis = redis.from_url(FILA_REDIS_URL, decode_responses=True)
+    return _redis
 
 
 def _url_broker() -> str:
@@ -32,7 +52,7 @@ RABBITMQ_URL = _url_broker()
 FILA_INDEXACAO = "indexacao"
 FILA_FALHAS = "indexacao.falhas"
 # pika repassa erros de socket (ex.: DNS do broker) sem embrulhar em AMQPError.
-ERROS_BROKER = (pika.exceptions.AMQPError, OSError)
+ERROS_BROKER = (pika.exceptions.AMQPError, OSError, RedisError)
 
 
 def conectar():
@@ -53,6 +73,10 @@ def declarar_filas(canal):
 
 def publicar(mensagem, tentativas=3, espera=1):
     """Publica com confirmacao do broker; repete falhas de conexao."""
+    if usa_redis():
+        envelope = {"headers": telemetria.injetar(), "corpo": mensagem}
+        cliente_redis().rpush(FILA_INDEXACAO, json.dumps(envelope, ensure_ascii=False))
+        return
     for tentativa in range(tentativas):
         try:
             conexao = conectar()

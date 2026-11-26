@@ -21,6 +21,9 @@ from comum import telemetria
 from comum.modelo import carregar_modelo
 
 MAX_TENTATIVAS = int(os.getenv("WORKER_MAX_TENTATIVAS", "3"))
+# Segundos de espera do BLPOP; 0 bloqueia sem acordar periodicamente (deixa o
+# container hibernar por inatividade no plano Free do Railway).
+ESPERA_FILA = int(os.getenv("FILA_ESPERA_SEGUNDOS", "5"))
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -94,7 +97,7 @@ def main():
 
     while True:
         try:
-            tarefa = fila.proxima_tarefa(timeout=5)
+            tarefa = fila.proxima_tarefa(timeout=ESPERA_FILA)
         except redis.RedisError as erro:
             logger.warning("redis indisponivel (%s); nova tentativa em 3s",
                            type(erro).__name__)
